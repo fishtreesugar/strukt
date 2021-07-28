@@ -156,7 +156,35 @@ defmodule Strukt.Test do
     refute is_nil(uuid)
   end
 
-  test "parse custom fields with empry params" do
+  test "can parse the params to the virtual field" do
+    params = %{name: "Daniel", phone: "+85299887766"}
+
+    assert {:ok,
+            %Strukt.Test.Fixtures.VirtualField{
+              name: "Daniel",
+              phone: "+85299887766",
+              uuid: uuid
+            }} = Fixtures.VirtualField.new(params)
+
+    refute is_nil(uuid)
+  end
+
+  test "can parse the params to the InlineSchema virtual field" do
+    params = %{name: "Daniel", phone: "+85299887766"}
+
+    assert {
+             :ok,
+             %Strukt.Test.Fixtures.InlineVirtualField{
+               name: "Daniel",
+               phone: "+85299887766",
+               uuid: uuid
+             }
+           } = Fixtures.InlineVirtualField.new(params)
+
+    refute is_nil(uuid)
+  end
+
+  test "parse custom fields with empty params" do
     assert {:ok,
             %Strukt.Test.Fixtures.CustomFieldsWithEmbeddedSchema{
               items: [],
