@@ -9,6 +9,31 @@ defmodule Aux do
   end
 end
 
+defmodule Custom.EctoType do
+  @moduledoc "Custom Ecto Type for test"
+  @type t() :: URI.t()
+
+  use Ecto.Type
+  def type, do: :map
+
+  def cast(uri) when is_binary(uri), do: {:ok, URI.parse(uri)}
+  def cast(%URI{} = uri), do: {:ok, uri}
+
+  def cast(_), do: :error
+
+  def load(data) when is_map(data) do
+    data =
+      for {key, val} <- data do
+        {String.to_existing_atom(key), val}
+      end
+
+    {:ok, struct!(URI, data)}
+  end
+
+  def dump(%URI{} = uri), do: {:ok, Map.from_struct(uri)}
+  def dump(_), do: :error
+end
+
 defmodule Strukt.Test.Fixtures do
   use Strukt
 
@@ -66,6 +91,25 @@ defmodule Strukt.Test.Fixtures do
         @type t :: %__MODULE__{
                 required_embeds_one: Aux.t(),
                 optional_embeds_one: Aux.t() | nil
+              }
+      end
+      |> inspect()
+    end
+  end
+
+  defmodule CustomEctoTypeTypeSepc do
+    use Strukt
+
+    @primary_key false
+    defstruct do
+      field(:uri, Custom.EctoType)
+      field(:foobar, :string)
+    end
+
+    defmacro expected_type_spec_ast_str do
+      quote context: __MODULE__ do
+        @type t :: %__MODULE__{
+                uri: Custom.EctoType.t()
               }
       end
       |> inspect()
@@ -327,7 +371,9 @@ defmodule Strukt.Test.Fixtures do
   defstruct ValidateSets do
     @moduledoc "This module exercises validations based on set membership"
 
-    field(:one_of, :string, one_of: [values: ["a", "b", "c"], message: "must be one of [a, b, c]"])
+    field(:one_of, :string,
+      one_of: [values: ["a", "b", "c"], message: "must be one of [a, b, c]"]
+    )
 
     field(:none_of, :string,
       none_of: [values: ["a", "b", "c"], message: "cannot be one of [a, b, c]"]

@@ -545,6 +545,26 @@ defmodule Strukt.Test do
              Fixtures.EmbedsOneTypeSpec.expected_type_spec_ast_str()
   end
 
+  test "custom ecto type" do
+    require Fixtures.CustomEctoTypeTypeSepc
+
+    assert inspect(
+             Strukt.Typespec.generate(%Strukt.Typespec{
+               caller: Strukt.Test.Fixtures.CustomEctoTypeTypeSepc,
+               fields: [:uri],
+               info: %{
+                 uri: %{
+                   type: :field,
+                   value_type: Custom.EctoType,
+                   required: true
+                 }
+               },
+               embeds: []
+             })
+           ) ==
+             Fixtures.CustomEctoTypeTypeSepc.expected_type_spec_ast_str()
+  end
+
   defp changeset_errors(%Ecto.Changeset{} = cs) do
     cs
     |> Ecto.Changeset.traverse_errors(fn {msg, opts} ->
