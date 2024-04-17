@@ -138,30 +138,30 @@ defmodule Strukt.Typespec do
   defp type_to_type_name(:date),
     do: compose_call(Date, :t, [])
 
-  defp type_to_type_name({:__aliases__, _, parts} = ast) do
-    case Module.concat(parts) do
+  defp type_to_type_name(mod) when is_atom(mod) and not is_nil(mod) do
+    case mod do
       Ecto.Enum ->
         primitive(:atom)
 
       Ecto.UUID ->
-        primitive(:string)
+        compose_call(Ecto.UUID, :t, [])
 
       mod ->
-        with {:module, _} <- Code.ensure_compiled(mod) do
-          try do
-            if Kernel.Typespec.defines_type?(mod, {:t, 0}) do
-              compose_call(ast, :t, [])
-            else
-              # No t/0 type defined, so fallback to any/0
-              primitive(:any)
-            end
-          rescue
-            ArgumentError ->
-              # We shouldn't hit this branch, but if Elixir can't find module metadata
-              # during defines_type?, it raises ArgumentError, so we handle this like the
-              # other pessimistic cases
-              primitive(:any)
-          end
+        with {:module, _} <- Code.ensure_compiled(mod),
+             {:ok, mod_types} <- Code.Typespec.fetch_types(mod),
+             t0 when not is_nil(t0) <-
+               Enum.find(
+                 mod_types,
+                 &match?(
+                   {kind, {:t, _, args}} when kind in [:type, :opaque] and length(args) == 0,
+                   &1
+                 )
+               ) do
+          compose_call(
+            {:__aliases__, [alias: false], Enum.map(Module.split(mod), &String.to_atom/1)},
+            :t,
+            []
+          )
         else
           _ ->
             # Module is unable to be loaded, either due to compiler deadlock, or because
