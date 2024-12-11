@@ -496,7 +496,7 @@ defmodule Strukt do
           embeds: @cast_embed_fields
         })
 
-      Module.eval_quoted(__ENV__, typespec_ast)
+      Code.eval_quoted(typespec_ast, [], __ENV__)
 
       defp validator_builder_call(unquote(changeset), opts),
         do: unquote(validate_body)
@@ -599,7 +599,7 @@ defmodule Strukt do
 
       # Generate the __validate__ function
       validate_ast = Strukt.Validation.generate(__MODULE__, @validated_fields)
-      Module.eval_quoted(__ENV__, validate_ast)
+      Code.eval_quoted(validate_ast, [], __ENV__)
 
       # Handle conditional implementation of Jason.Encoder
       if Module.get_attribute(__MODULE__, :derives_jason) do
