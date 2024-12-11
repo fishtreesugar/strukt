@@ -585,6 +585,9 @@ defmodule Strukt.Test do
         {key, {:parameterized, Ecto.Enum, %{mappings: values}}}, acc ->
           String.replace(acc, "%{#{key}}", values |> Keyword.values() |> Enum.join(", "))
 
+        {key, {:parameterized, {Ecto.Enum, %{mappings: values}}}}, acc ->
+          String.replace(acc, "%{#{key}}", values |> Keyword.values() |> Enum.join(", "))
+
         {key, %Range{} = value}, acc ->
           String.replace(acc, "%{#{key}}", inspect(value))
 
