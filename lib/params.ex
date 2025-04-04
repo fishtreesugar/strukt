@@ -50,7 +50,6 @@ defmodule Strukt.Params do
   defp transform_from_struct(module, params, struct) do
     struct
     |> Map.from_struct()
-    |> Map.to_list()
     |> Enum.map(fn {key, _value} ->
       case module.__schema__(:field_source, key) do
         nil ->
