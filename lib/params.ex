@@ -10,7 +10,7 @@ defmodule Strukt.Params do
       when is_map(params) and map_size(params) == 0,
       do: params
 
-  def transform(module, %{__struct__: _} = params, nil = _struct) do
+  def transform(module, params, nil = _struct) when is_struct(params) do
     transform_from_struct(module, params, params)
   end
 
@@ -22,7 +22,7 @@ defmodule Strukt.Params do
     transform_from_struct(module, params, struct)
   end
 
-  def transform(module, params, %{__struct__: _} = struct) do
+  def transform(module, params, struct) when is_struct(struct) do
     transform_from_struct(module, params, struct)
   end
 
