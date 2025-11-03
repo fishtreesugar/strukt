@@ -65,16 +65,6 @@ defmodule Strukt.Params do
 
   defp map_value_to_field(module, field, value, struct) do
     case module.__schema__(:type, field) do
-      {:parameterized, Ecto.Embedded,
-       %Ecto.Embedded{
-         cardinality: cardinality,
-         related: embedded_module
-       }} ->
-        {field,
-         transform(embedded_module, value, get_struct_field_value(struct, field),
-           cardinality: cardinality
-         )}
-
       # since ecto 3.12.0, parameterized type represent as a tuple instead of a triple
       # see https://github.com/elixir-ecto/ecto/commit/21c6068
       {:parameterized,
