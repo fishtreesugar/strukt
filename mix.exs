@@ -11,10 +11,6 @@ defmodule Strukt.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       elixirc_paths: elixirc_paths(Mix.env()),
-      preferred_cli_env: [
-        docs: :docs,
-        "hex.publish": :docs
-      ],
       name: "Strukt",
       source_url: "https://github.com/bitwalker/strukt",
       homepage_url: "http://github.com/bitwalker/strukt",
@@ -37,6 +33,15 @@ defmodule Strukt.MixProject do
   def application do
     [
       extra_applications: []
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [
+        docs: :docs,
+        "hex.publish": :docs
+      ]
     ]
   end
 
