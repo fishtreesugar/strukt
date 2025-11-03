@@ -48,7 +48,6 @@ defmodule Strukt.MixProject do
     [
       {:ecto, "~> 3.12"},
       {:jason, "> 0.0.0", optional: true},
-      {:uniq, "~> 0.1", only: [:test]},
       {:ex_doc, "> 0.0.0", only: [:docs], runtime: false}
     ]
   end
