@@ -147,30 +147,64 @@ defmodule Strukt.Typespec do
         compose_call(Ecto.UUID, :t, [])
 
       mod ->
-        with {:module, _} <- Code.ensure_compiled(mod),
-             {:ok, mod_types} <- Code.Typespec.fetch_types(mod),
-             t0 when not is_nil(t0) <-
-               Enum.find(
-                 mod_types,
-                 &match?(
-                   {kind, {:t, _, args}} when kind in [:type, :opaque] and length(args) == 0,
-                   &1
-                 )
-               ) do
-          compose_call(
-            {:__aliases__, [alias: false], Enum.map(Module.split(mod), &String.to_atom/1)},
-            :t,
-            []
-          )
+        if defines_module_type?(mod) do
+          compose_call(module_alias_ast(mod), :t, [])
         else
-          _ ->
-            # Module is unable to be loaded, either due to compiler deadlock, or because
-            # the module name we have is an alias, or perhaps just plain wrong, so we can't
-            # assume anything about its type
-            primitive(:any)
+          # Fall back to the underlying Ecto type when available, rather than
+          # relying on debug info being present in the BEAM to discover `t/0`.
+          ecto_type_to_type_name(mod) || primitive(:any)
         end
     end
   end
 
   defp type_to_type_name(_), do: primitive(:any)
+
+  defp defines_module_type?(mod) do
+    module_defines_type?(mod) or docs_define_type?(mod) or beam_defines_type?(mod)
+  end
+
+  defp module_defines_type?(mod) do
+    Module.defines_type?(mod, {:t, 0})
+  rescue
+    ArgumentError -> false
+  end
+
+  defp docs_define_type?(mod) do
+    case Code.fetch_docs(mod) do
+      {:docs_v1, _, _, _, _, _, docs} ->
+        Enum.any?(docs, &match?({{:type, :t, 0}, _, _, _, _}, &1))
+
+      _ ->
+        false
+    end
+  end
+
+  defp beam_defines_type?(mod) do
+    case Code.Typespec.fetch_types(mod) do
+      {:ok, mod_types} ->
+        Enum.any?(
+          mod_types,
+          &match?({kind, {:t, _, args}} when kind in [:type, :opaque] and length(args) == 0, &1)
+        )
+
+      _ ->
+        false
+    end
+  end
+
+  defp ecto_type_to_type_name(mod) do
+    with {:module, _} <- Code.ensure_loaded(mod),
+         true <- function_exported?(mod, :type, 0) do
+      mod.type()
+      |> type_to_type_name()
+    else
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp module_alias_ast(mod) do
+    {:__aliases__, [alias: false], Enum.map(Module.split(mod), &String.to_atom/1)}
+  end
 end

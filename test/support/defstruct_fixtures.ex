@@ -34,6 +34,32 @@ defmodule Custom.EctoType do
   def dump(_), do: :error
 end
 
+defmodule Custom.NoDebugInfoEctoType do
+  @moduledoc "Custom Ecto Type without BEAM debug info for test"
+  @compile {:debug_info, false}
+  @type t() :: URI.t()
+
+  use Ecto.Type
+  def type, do: :map
+
+  def cast(uri) when is_binary(uri), do: {:ok, URI.parse(uri)}
+  def cast(%URI{} = uri), do: {:ok, uri}
+
+  def cast(_), do: :error
+
+  def load(data) when is_map(data) do
+    data =
+      for {key, val} <- data do
+        {String.to_existing_atom(key), val}
+      end
+
+    {:ok, struct!(URI, data)}
+  end
+
+  def dump(%URI{} = uri), do: {:ok, Map.from_struct(uri)}
+  def dump(_), do: :error
+end
+
 defmodule Strukt.Test.Fixtures do
   use Strukt
 
@@ -110,6 +136,24 @@ defmodule Strukt.Test.Fixtures do
       quote context: __MODULE__ do
         @type t :: %__MODULE__{
                 uri: Custom.EctoType.t()
+              }
+      end
+      |> inspect()
+    end
+  end
+
+  defmodule NoDebugInfoCustomEctoTypeTypeSpec do
+    use Strukt
+
+    @primary_key false
+    defstruct do
+      field(:uri, Custom.NoDebugInfoEctoType)
+    end
+
+    defmacro expected_type_spec_ast_str do
+      quote context: __MODULE__ do
+        @type t :: %__MODULE__{
+                uri: Custom.NoDebugInfoEctoType.t()
               }
       end
       |> inspect()

@@ -577,6 +577,26 @@ defmodule Strukt.Test do
              Fixtures.CustomEctoTypeTypeSepc.expected_type_spec_ast_str()
   end
 
+  test "custom ecto type without beam debug info" do
+    require Fixtures.NoDebugInfoCustomEctoTypeTypeSpec
+
+    assert inspect(
+             Strukt.Typespec.generate(%Strukt.Typespec{
+               caller: Strukt.Test.Fixtures.NoDebugInfoCustomEctoTypeTypeSpec,
+               fields: [:uri],
+               info: %{
+                 uri: %{
+                   type: :field,
+                   value_type: Custom.NoDebugInfoEctoType,
+                   required: true
+                 }
+               },
+               embeds: []
+             })
+           ) ==
+             Fixtures.NoDebugInfoCustomEctoTypeTypeSpec.expected_type_spec_ast_str()
+  end
+
   defp changeset_errors(%Ecto.Changeset{} = cs) do
     cs
     |> Ecto.Changeset.traverse_errors(fn {msg, opts} ->
