@@ -6,20 +6,23 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }}
+    runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
-        otp: ['23.2', '24.2', '25.0']
-        elixir: ['1.12.3', '1.13.3', '1.14.0']
-        exclude:
-        - otp: '25.0'
-          elixir: '1.12.3'
+        include:
+        - otp: '27'
+          elixir: '1.17.3'
+        - otp: '27'
+          elixir: '1.18.4'
+        - otp: '28'
+          elixir: '1.19.5'
     steps:
-      - uses: actions/checkout@v2
-      - uses: erlef/setup-elixir@v1
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
         with:
           otp-version: ${{matrix.otp}}
           elixir-version: ${{matrix.elixir}}
       - run: mix deps.get
       - run: mix test
-
