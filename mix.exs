@@ -5,7 +5,7 @@ defmodule Strukt.MixProject do
     [
       app: :strukt,
       version: "0.3.2",
-      elixir: "~> 1.11",
+      elixir: "~> 1.14",
       description: description(),
       package: package(),
       start_permanent: Mix.env() == :prod,
