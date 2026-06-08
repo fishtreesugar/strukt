@@ -78,10 +78,89 @@ defmodule Strukt.Params do
            cardinality: cardinality
          )}
 
+      {:parameterized, {PolymorphicEmbed, _opts}} ->
+        {field,
+         transform_polymorphic(module, field, value, get_struct_field_value(struct, field))}
+
+      {:array, {:parameterized, {PolymorphicEmbed, _opts}}} ->
+        {field,
+         transform_polymorphic(module, field, value, get_struct_field_value(struct, field),
+           cardinality: :many
+         )}
+
       _type ->
         {field, value}
     end
   end
+
+  defp transform_polymorphic(module, field, params, struct, opts \\ [])
+
+  # Keep nil as-is so required validation and PolymorphicEmbed's own handling can run later.
+  defp transform_polymorphic(_module, _field, nil, _struct, _opts), do: nil
+
+  # Struct params have already been cast by the caller, so leave them untouched.
+  defp transform_polymorphic(_module, _field, %_{} = params, _struct, _opts), do: params
+
+  # For polymorphic_embeds_many, transform each map using the matching current embed by index.
+  # Non-map structs in the list are preserved by the clause above.
+  defp transform_polymorphic(module, field, params, struct, cardinality: :many)
+       when is_list(params) do
+    current = List.wrap(struct)
+
+    params
+    |> Enum.with_index()
+    |> Enum.map(fn
+      {%_{} = param, _index} ->
+        param
+
+      {param, index} ->
+        transform_polymorphic(module, field, param, Enum.at(current, index))
+    end)
+  end
+
+  # Map params need the selected polymorphic module before source-field mapping can be applied.
+  # If the type cannot be inferred, keep the params unchanged and let cast_polymorphic_embed/3
+  # produce the configured error/raise/nilify behavior.
+  defp transform_polymorphic(module, field, params, struct, _opts) when is_map(params) do
+    case PolymorphicEmbed.get_polymorphic_module(module, field, params) do
+      nil ->
+        params
+
+      embedded_module ->
+        type_field_name = polymorphic_type_field_name(module, field)
+        type = get_params_field_value(params, type_field_name, nil)
+        struct = polymorphic_struct_for_module(struct, embedded_module)
+
+        embedded_module
+        |> transform(params, struct)
+        |> maybe_put_polymorphic_type(type_field_name, type)
+    end
+  rescue
+    _ -> params
+  end
+
+  # Leave invalid shapes alone so the eventual cast can report the type error.
+  defp transform_polymorphic(_module, _field, params, _struct, _opts), do: params
+
+  defp polymorphic_struct_for_module(struct, module) when is_struct(struct, module), do: struct
+  defp polymorphic_struct_for_module(_struct, _module), do: nil
+
+  # The type marker must be restored after source-field mapping, otherwise PolymorphicEmbed
+  # cannot infer which embedded schema to cast.
+  defp polymorphic_type_field_name(module, field) do
+    case module.__schema__(:type, field) do
+      {:parameterized, {PolymorphicEmbed, opts}} ->
+        opts.type_field_name
+
+      {:array, {:parameterized, {PolymorphicEmbed, opts}}} ->
+        opts.type_field_name
+    end
+  end
+
+  defp maybe_put_polymorphic_type(params, _type_field_name, nil), do: params
+
+  defp maybe_put_polymorphic_type(params, type_field_name, type),
+    do: Map.put(params, type_field_name, type)
 
   defp get_params_field_value(nil, _field, _struct), do: nil
 

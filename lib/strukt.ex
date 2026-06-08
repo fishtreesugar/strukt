@@ -54,6 +54,8 @@ defmodule Strukt do
     :field,
     :embeds_one,
     :embeds_many,
+    :polymorphic_embeds_one,
+    :polymorphic_embeds_many,
     :belongs_to,
     :has_many,
     :has_one,
@@ -283,7 +285,12 @@ defmodule Strukt do
         {node, meta, elements} ->
           kvs =
             Keyword.merge(
-              [type: t, value_type: f.value_type, default: f.options[:default]],
+              [
+                type: t,
+                value_type: f.value_type,
+                default: f.options[:default],
+                types: f.options[:types]
+              ],
               f.validations
             )
 
@@ -296,6 +303,12 @@ defmodule Strukt do
 
     # Get a list of embeds valid for `cast_embed/3`
     cast_embed_fields = for %{type: t} = f <- fields, t in [:embeds_one, :embeds_many], do: f.name
+
+    # Get a list of polymorphic embeds valid for `PolymorphicEmbed.cast_polymorphic_embed/3`
+    cast_polymorphic_embed_fields =
+      for %{type: t} = f <- fields, t in [:polymorphic_embeds_one, :polymorphic_embeds_many] do
+        f.name
+      end
 
     # Expand fields back to their final AST form
     fields_ast =
@@ -321,6 +334,7 @@ defmodule Strukt do
 
         use Ecto.Schema
         import Ecto.Changeset, except: [change: 2]
+        import PolymorphicEmbed, only: [polymorphic_embeds_one: 2, polymorphic_embeds_many: 2]
 
         @behaviour unquote(__MODULE__)
         @before_compile unquote(__MODULE__)
@@ -358,6 +372,7 @@ defmodule Strukt do
         @schema_name Macro.underscore(__MODULE__)
         @validated_fields unquote(validated_fields)
         @cast_embed_fields unquote(Macro.escape(cast_embed_fields))
+        @cast_polymorphic_embed_fields unquote(Macro.escape(cast_polymorphic_embed_fields))
 
         # Ensure primary key can be cast, if applicable
         case Module.get_attribute(__MODULE__, :primary_key) do
@@ -444,12 +459,13 @@ defmodule Strukt do
         def change(entity_or_changeset, params) do
           case entity_or_changeset do
             %Ecto.Changeset{} = cs ->
-              cs
-              |> Ecto.Changeset.change(params)
-              |> validate()
+              entity = Ecto.Changeset.apply_changes(cs)
+              formed_params = Strukt.Params.transform(__MODULE__, params, entity)
+              changeset(cs, formed_params, cs.action)
 
             %__MODULE__{} = entity ->
-              changeset(entity, params, :update)
+              formed_params = Strukt.Params.transform(__MODULE__, params, entity)
+              changeset(entity, formed_params, :update)
           end
         end
 
@@ -493,7 +509,7 @@ defmodule Strukt do
           caller: __MODULE__,
           info: @validated_fields,
           fields: @cast_fields,
-          embeds: @cast_embed_fields
+          embeds: @cast_embed_fields ++ @cast_polymorphic_embed_fields
         })
 
       Code.eval_quoted(typespec_ast, [], __ENV__)
@@ -535,6 +551,28 @@ defmodule Strukt do
         cast(entity, params, @cast_fields)
         |> Map.put(:action, action)
         |> __cast_embeds__(@cast_embed_fields)
+        |> __cast_polymorphic_embeds__(@cast_polymorphic_embed_fields)
+        |> validate()
+      end
+
+      def changeset(%Ecto.Changeset{data: %__MODULE__{}} = changeset, params, action)
+          when action in [:insert, :update, :delete, nil] do
+        params =
+          case params do
+            %__MODULE__{} ->
+              Map.from_struct(params)
+
+            m when is_map(m) ->
+              m
+
+            other ->
+              Enum.into(other, %{})
+          end
+
+        cast(changeset, params, @cast_fields)
+        |> Map.put(:action, action)
+        |> __cast_embeds__(@cast_embed_fields)
+        |> __cast_polymorphic_embeds__(@cast_polymorphic_embed_fields)
         |> validate()
       end
 
@@ -574,6 +612,33 @@ defmodule Strukt do
         end
       end
 
+      defp __cast_polymorphic_embeds__(changeset, []), do: changeset
+
+      if length(@cast_polymorphic_embed_fields) > 0 do
+        defp __cast_polymorphic_embeds__(%Ecto.Changeset{params: params} = changeset, [
+               field | fields
+             ]) do
+          f = to_string(field)
+
+          changeset =
+            case Map.get(params, f) do
+              nil ->
+                changeset
+
+              %_{} = entity ->
+                Ecto.Changeset.put_change(changeset, field, entity)
+
+              [%_{} | _] = entities ->
+                Ecto.Changeset.put_change(changeset, field, entities)
+
+              _other ->
+                PolymorphicEmbed.cast_polymorphic_embed(changeset, field)
+            end
+
+          __cast_polymorphic_embeds__(changeset, fields)
+        end
+      end
+
       @doc """
       Applies the changes in the changset if the changeset is valid, returning the
       updated data. The action must be one of `:insert`, `:update`, or `:delete` and
@@ -592,7 +657,7 @@ defmodule Strukt do
       @doc "Deserialize this type from a JSON string or iodata"
       @spec from_json(binary | iodata) :: {:ok, t} | {:error, reason :: term}
       def from_json(input) do
-        with {:ok, map} <- Jason.decode(input, keys: :atoms!, strings: :copy) do
+        with {:ok, map} <- Jason.decode(input, strings: :copy) do
           {:ok, Ecto.embedded_load(__MODULE__, map, :json)}
         end
       end

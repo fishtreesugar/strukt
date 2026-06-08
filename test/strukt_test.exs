@@ -282,6 +282,193 @@ defmodule Strukt.Test do
     refute is_nil(uuid)
   end
 
+  test "can cast polymorphic embeds from params" do
+    params = %{
+      "title" => "appointment",
+      "channel" => %{"__type__" => "email", "emailAddress" => "person@example.com"},
+      "fallback_channels" => [
+        %{"__type__" => "sms", "number" => "+15555550100"},
+        %{"__type__" => "email", "emailAddress" => "backup@example.com"}
+      ]
+    }
+
+    assert {:ok,
+            %Fixtures.PolymorphicReminder{
+              title: "appointment",
+              channel: %Fixtures.PolymorphicEmail{address: "person@example.com"},
+              fallback_channels: [
+                %Fixtures.PolymorphicSMS{number: "+15555550100"},
+                %Fixtures.PolymorphicEmail{address: "backup@example.com"}
+              ]
+            }} = Fixtures.PolymorphicReminder.new(params)
+  end
+
+  test "can cast polymorphic embeds from structs" do
+    reminder = %Fixtures.PolymorphicReminder{}
+    channel = %Fixtures.PolymorphicSMS{number: "+15555550101"}
+
+    assert {:ok, %Fixtures.PolymorphicReminder{channel: ^channel}} =
+             Fixtures.PolymorphicReminder.change(reminder, channel: channel)
+             |> Fixtures.PolymorphicReminder.from_changeset()
+  end
+
+  test "can cast polymorphic embeds from changesets" do
+    assert {:ok, reminder} =
+             Fixtures.PolymorphicReminder.new(%{
+               channel: %{__type__: :email, emailAddress: "old@example.com"}
+             })
+
+    changeset = Fixtures.PolymorphicReminder.changeset(reminder)
+
+    assert {:ok, %Fixtures.PolymorphicReminder{channel: %Fixtures.PolymorphicSMS{number: "+1"}}} =
+             Fixtures.PolymorphicReminder.change(changeset, %{
+               "channel" => %{"__type__" => "sms", "number" => "+1"}
+             })
+             |> Fixtures.PolymorphicReminder.from_changeset()
+
+    assert {:ok,
+            %Fixtures.PolymorphicReminder{
+              channel: %Fixtures.PolymorphicEmail{address: "new@example.com"}
+            }} =
+             Fixtures.PolymorphicReminder.change(changeset, %{
+               channel: %{__type__: :email, emailAddress: "new@example.com"}
+             })
+             |> Fixtures.PolymorphicReminder.from_changeset()
+  end
+
+  test "can change polymorphic embed types without reusing old embedded data" do
+    assert {:ok, reminder} =
+             Fixtures.PolymorphicReminder.new(%{
+               channel: %{__type__: :email, emailAddress: "old@example.com"}
+             })
+
+    assert {:ok, %Fixtures.PolymorphicReminder{channel: %Fixtures.PolymorphicSMS{number: "+1"}}} =
+             Fixtures.PolymorphicReminder.change(reminder, %{
+               channel: %{__type__: :sms, number: "+1"}
+             })
+             |> Fixtures.PolymorphicReminder.from_changeset()
+  end
+
+  test "can cast polymorphic embeds with changeset public APIs" do
+    changeset =
+      Fixtures.PolymorphicReminder.changeset(%Fixtures.PolymorphicReminder{}, %{
+        "channel" => %{"__type__" => "email", "address" => "person@example.com"}
+      })
+
+    assert {:ok,
+            %Fixtures.PolymorphicReminder{
+              channel: %Fixtures.PolymorphicEmail{address: "person@example.com"}
+            }} = Fixtures.PolymorphicReminder.from_changeset(changeset)
+
+    changeset =
+      Fixtures.PolymorphicReminder.changeset(
+        %Fixtures.PolymorphicReminder{},
+        %{channel: %{__type__: :sms, number: "+15555550102"}},
+        :insert
+      )
+
+    assert changeset.action == :insert
+
+    assert {:ok,
+            %Fixtures.PolymorphicReminder{
+              channel: %Fixtures.PolymorphicSMS{number: "+15555550102"}
+            }} = Fixtures.PolymorphicReminder.from_changeset(changeset)
+  end
+
+  test "can normalize nil and empty polymorphic embeds many params" do
+    for fallback_channels <- [nil, []] do
+      assert {:ok,
+              %Fixtures.PolymorphicReminder{
+                channel: %Fixtures.PolymorphicSMS{number: "+1"},
+                fallback_channels: []
+              }} =
+               Fixtures.PolymorphicReminder.new(%{
+                 channel: %{__type__: :sms, number: "+1"},
+                 fallback_channels: fallback_channels
+               })
+    end
+  end
+
+  test "returns changeset errors for unknown polymorphic embed types" do
+    assert {:error, changeset} =
+             Fixtures.PolymorphicReminder.new(channel: %{__type__: :push, token: "abc"})
+
+    assert %{channel: ["is invalid"]} = changeset_errors(changeset)
+
+    assert {:error, changeset} =
+             Fixtures.PolymorphicReminder.new(%{
+               channel: %{__type__: :sms, number: "+1"},
+               fallback_channels: [%{__type__: :push, token: "abc"}]
+             })
+
+    assert %{fallback_channels: ["is invalid"]} = changeset_errors(changeset)
+  end
+
+  test "can deserialize polymorphic embeds from json" do
+    json =
+      Jason.encode!(%{
+        title: "appointment",
+        channel: %{__type__: :email, emailAddress: "person@example.com"},
+        fallback_channels: [
+          %{__type__: :sms, number: "+15555550100"},
+          %{__type__: :email, emailAddress: "backup@example.com"}
+        ]
+      })
+
+    assert {:ok,
+            %Fixtures.PolymorphicReminder{
+              title: "appointment",
+              channel: %Fixtures.PolymorphicEmail{address: "person@example.com"},
+              fallback_channels: [
+                %Fixtures.PolymorphicSMS{number: "+15555550100"},
+                %Fixtures.PolymorphicEmail{address: "backup@example.com"}
+              ]
+            }} = Fixtures.PolymorphicReminder.from_json(json)
+  end
+
+  test "can round-trip polymorphic embeds through json" do
+    assert {:ok, reminder} =
+             Fixtures.PolymorphicReminder.new(%{
+               channel: %{__type__: :email, emailAddress: "person@example.com"},
+               fallback_channels: [%{__type__: :sms, number: "+15555550100"}]
+             })
+
+    assert {:ok, json} = Jason.encode(reminder)
+    assert {:ok, ^reminder} = Fixtures.PolymorphicReminder.from_json(json)
+  end
+
+  test "raises when json contains an unknown polymorphic embed type" do
+    json =
+      Jason.encode!(%{
+        channel: %{__type__: :push, token: "abc"}
+      })
+
+    assert_raise RuntimeError, ~r/could not infer polymorphic embed/, fn ->
+      Fixtures.PolymorphicReminder.from_json(json)
+    end
+  end
+
+  test "can validate required polymorphic embeds" do
+    assert {:error, changeset} = Fixtures.PolymorphicReminder.new()
+    assert %{channel: ["channel must be set"]} = changeset_errors(changeset)
+  end
+
+  test "can validate polymorphic embedded schemas" do
+    assert {:error, %Ecto.Changeset{changes: %{channel: channel_changeset}}} =
+             Fixtures.PolymorphicReminder.new(channel: %{__type__: :email})
+
+    assert %{address: ["can't be blank"]} = changeset_errors(channel_changeset)
+  end
+
+  test "can validate polymorphic embeds through validate public api" do
+    changeset =
+      %Fixtures.PolymorphicReminder{}
+      |> Ecto.Changeset.change()
+      |> Fixtures.PolymorphicReminder.validate()
+
+    assert %{channel: ["channel must be set"]} = changeset_errors(changeset)
+  end
+
   test "parse custom fields with empty params" do
     assert {:ok,
             %Strukt.Test.Fixtures.CustomFieldsWithEmbeddedSchema{
