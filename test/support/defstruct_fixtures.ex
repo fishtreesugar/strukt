@@ -294,6 +294,55 @@ defmodule Strukt.Test.Fixtures do
     end
   end
 
+  defmodule PolymorphicEmail do
+    use Strukt
+
+    @primary_key false
+    defstruct do
+      field(:address, :string, source: :emailAddress, required: true)
+    end
+  end
+
+  defmodule PolymorphicSMS do
+    use Strukt
+
+    @primary_key false
+    defstruct do
+      field(:number, :string, required: true)
+    end
+  end
+
+  defmodule PolymorphicReminder do
+    use Strukt
+
+    alias Strukt.Test.Fixtures.PolymorphicEmail
+    alias Strukt.Test.Fixtures.PolymorphicSMS
+
+    @derives [Jason.Encoder]
+    defstruct do
+      field(:title, :string)
+
+      polymorphic_embeds_one(:channel,
+        types: [
+          email: PolymorphicEmail,
+          sms: PolymorphicSMS
+        ],
+        on_type_not_found: :changeset_error,
+        on_replace: :update,
+        required: [message: "channel must be set"]
+      )
+
+      polymorphic_embeds_many(:fallback_channels,
+        types: [
+          email: PolymorphicEmail,
+          sms: PolymorphicSMS
+        ],
+        on_type_not_found: :changeset_error,
+        on_replace: :delete
+      )
+    end
+  end
+
   defstruct Inline do
     @moduledoc "This module represents the simplest possible use of defstruct/2, i.e. inline definition of a struct and its module"
 

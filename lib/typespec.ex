@@ -82,6 +82,19 @@ defmodule Strukt.Typespec do
 
         {name, %{type: :embeds_many, value_type: type}} ->
           {name, List.wrap(compose_call(type, :t, []))}
+
+        {name, %{type: :polymorphic_embeds_one, types: types} = meta} ->
+          required? = Map.get(meta, :required) == true
+          type_name = polymorphic_type_name(types)
+
+          if required? do
+            {name, type_name}
+          else
+            {name, nilable(type_name)}
+          end
+
+        {name, %{type: :polymorphic_embeds_many, types: types}} ->
+          {name, List.wrap(polymorphic_type_name(types))}
       end)
 
     # Join all fields together
@@ -103,6 +116,24 @@ defmodule Strukt.Typespec do
     do: {{:., [], [module, function]}, [], args}
 
   defp nilable(type_name), do: {:|, [], [type_name, nil]}
+
+  defp polymorphic_type_name(types) when is_list(types) do
+    types
+    |> Enum.map(fn
+      {_type, type_opts} when is_list(type_opts) ->
+        Keyword.fetch!(type_opts, :module)
+
+      {_type, module} ->
+        module
+    end)
+    |> Enum.map(&compose_call(&1, :t, []))
+    |> union()
+  end
+
+  defp polymorphic_type_name(_types), do: primitive(:any)
+
+  defp union([type]), do: type
+  defp union([type | types]), do: {:|, [], [type, union(types)]}
 
   defp type_to_type_name(:id), do: primitive(:non_neg_integer)
   defp type_to_type_name(:binary_id), do: primitive(:binary)

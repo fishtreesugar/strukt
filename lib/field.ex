@@ -24,6 +24,8 @@ defmodule Strukt.Field do
     :field,
     :embeds_one,
     :embeds_many,
+    :polymorphic_embeds_one,
+    :polymorphic_embeds_many,
     :timestamps
   ]
 
@@ -39,6 +41,20 @@ defmodule Strukt.Field do
   """
   def parse(fields) do
     for {type, meta, args} <- fields, do: parse(type, meta, args)
+  end
+
+  defp parse(type, meta, [name, opts])
+       when type in [:polymorphic_embeds_one, :polymorphic_embeds_many] do
+    {validations, options} = Keyword.split(opts, @validation_opts)
+
+    %__MODULE__{
+      name: name,
+      type: type,
+      meta: meta,
+      value_type: PolymorphicEmbed,
+      options: options,
+      validations: validations
+    }
   end
 
   defp parse(type, meta, [name, value_type]) when type in @supported_field_types,
@@ -92,6 +108,16 @@ defmodule Strukt.Field do
 
   def to_ast(%__MODULE__{type: :timestamps, meta: meta, options: options}),
     do: {:timestamps, meta, options}
+
+  def to_ast(%__MODULE__{
+        type: type,
+        name: name,
+        meta: meta,
+        options: options,
+        block: nil
+      })
+      when type in [:polymorphic_embeds_one, :polymorphic_embeds_many],
+      do: {type, meta, [name, options]}
 
   def to_ast(%__MODULE__{
         type: type,
