@@ -96,9 +96,6 @@ defmodule Strukt.Typespec do
   defp map(elements) when is_list(elements),
     do: {:%{}, [], elements}
 
-  defp map(elements) when is_map(elements),
-    do: {:%{}, [], Map.to_list(elements)}
-
   defp compose_call(module, function, args) when is_atom(module) and is_list(args),
     do: {{:., [], [{:__aliases__, [alias: false], [module]}, function]}, [], args}
 
