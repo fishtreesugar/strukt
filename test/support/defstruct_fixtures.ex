@@ -343,6 +343,45 @@ defmodule Strukt.Test.Fixtures do
     end
   end
 
+  defmodule JsonLeaf do
+    use Strukt
+
+    @primary_key false
+    defstruct do
+      field(:name, :string)
+      field(:kind, :string, default: "Elixir.JsonLeaf")
+    end
+  end
+
+  defmodule JsonLeafType do
+    use Ecto.Type
+
+    def type, do: :map
+
+    def load(%{"kind" => _} = data), do: JsonLeaf.new(data)
+    def load(%{kind: _} = data), do: JsonLeaf.new(data)
+    def load(data) when is_map(data), do: {:ok, data}
+    def load(_data), do: :error
+
+    def cast(%{"kind" => _} = data), do: JsonLeaf.new(data)
+    def cast(%{kind: _} = data), do: JsonLeaf.new(data)
+    def cast(data) when is_map(data), do: {:ok, data}
+    def cast(_data), do: :error
+
+    def dump(data) when is_struct(data), do: {:ok, Map.from_struct(data)}
+    def dump(data) when is_map(data), do: {:ok, data}
+    def dump(_data), do: :error
+  end
+
+  defmodule JsonBag do
+    use Strukt
+
+    @primary_key false
+    defstruct do
+      field(:leaves, {:array, JsonLeafType})
+    end
+  end
+
   defstruct Inline do
     @moduledoc "This module represents the simplest possible use of defstruct/2, i.e. inline definition of a struct and its module"
 

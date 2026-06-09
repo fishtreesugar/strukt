@@ -437,6 +437,11 @@ defmodule Strukt.Test do
     assert {:ok, ^reminder} = Fixtures.PolymorphicReminder.from_json(json)
   end
 
+  test "can deserialize custom ecto types that handle string-key json maps" do
+    assert {:ok, %Fixtures.JsonBag{leaves: [%Fixtures.JsonLeaf{name: "a"}]}} =
+             Fixtures.JsonBag.from_json(~s({"leaves":[{"name":"a","kind":"Elixir.JsonLeaf"}]}))
+  end
+
   test "raises when json contains an unknown polymorphic embed type" do
     json =
       Jason.encode!(%{

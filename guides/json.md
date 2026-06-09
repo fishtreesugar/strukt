@@ -27,6 +27,10 @@ Internally, `defstruct` provides a concrete implementation of `Jason.Encoder` th
 For deserialization, `from_json/1` is defined for the struct's module, and uses `Ecto.embedded_load/3` to deserialize 
 back to the original struct using the canonical deserializer for each field type.
 
+Because JSON object keys are strings, maps passed to custom `Ecto.Type.load/1` callbacks are string-key maps. Strukt does
+not atomize arbitrary JSON keys during `from_json/1`. Custom types that load nested maps should handle string keys, or
+normalize their input internally, when they need to support JSON round-trips.
+
 The difference versus just letting `@derives [Jason.Encoder]` do its thing, is that `embedded_dump/2` and `embedded_load/3`
 ensure that the types are dumped/loaded according to their respective Ecto type definitions, which should produce canonical
 JSON encodings, as opposed to naively encoding fields based on their raw Elixir representation.
