@@ -53,7 +53,7 @@ defmodule Strukt.MixProject do
     [
       {:ecto, "~> 3.12"},
       {:polymorphic_embed, "~> 5.0"},
-      {:jason, "> 0.0.0", optional: true},
+      {:jason, "~> 1.4"},
       {:ex_doc, "> 0.0.0", only: [:docs], runtime: false}
     ]
   end
