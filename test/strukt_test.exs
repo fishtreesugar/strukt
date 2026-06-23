@@ -499,6 +499,32 @@ defmodule Strukt.Test do
       })
   end
 
+  test "return error when an embeds_many item has the wrong type" do
+    assert {:error,
+            %Ecto.Changeset{
+              action: :insert,
+              changes: %{},
+              errors: [items: {"is invalid", [validation: :embed, type: {:array, :map}]}],
+              valid?: false
+            }} =
+             Fixtures.CustomFieldsWithEmbeddedSchema.new(%{
+               items: ["item"]
+             })
+  end
+
+  test "return error when passing wrong typed value to embeds_one field" do
+    assert {:error,
+            %Ecto.Changeset{
+              action: :insert,
+              changes: %{},
+              errors: [meta: {"is invalid", [validation: :embed, type: :map]}],
+              valid?: false
+            }} =
+             Fixtures.CustomFieldsWithEmbeddedSchema.new(%{
+               meta: "metadata"
+             })
+  end
+
   test "parse custom fields with boolean value" do
     assert {:ok, %Strukt.Test.Fixtures.CustomFieldsWithBoolean{enabled: false, uuid: uuid}} =
              Fixtures.CustomFieldsWithBoolean.new(%{Enabled: false})

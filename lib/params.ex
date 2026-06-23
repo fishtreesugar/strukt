@@ -10,6 +10,12 @@ defmodule Strukt.Params do
       when is_map(params) and map_size(params) == 0,
       do: params
 
+  # Scalar params have no fields to map. Preserve them so Ecto can report the type mismatch
+  # instead of crashing in get_params_field_value/3.
+  def transform(_module, params, _struct)
+      when not is_map(params) and not is_list(params) and not is_nil(params),
+      do: params
+
   def transform(module, params, nil = _struct) when is_struct(params) do
     transform_from_struct(module, params, params)
   end
