@@ -1,5 +1,8 @@
 # Strukt
 
+This fork is maintained by [fishtreesugar](https://github.com/fishtreesugar/strukt)
+and includes modifications to [Paul Schoenfelder’s original Strukt project](https://github.com/bitwalker/strukt).
+
 Strukt provides an extended `defstruct` macro which builds on top of `Ecto.Schema`
 and `Ecto.Changeset` to remove the boilerplate of defining type specifications,
 implementing validations, generating changesets from parameters, JSON serialization,
@@ -18,10 +21,12 @@ and friends ever see it.
 
 ## Installation
 
+The oldest combination in the CI matrix is Elixir 1.17.3 with Erlang/OTP 27.
+
 ``` elixir
 def deps do
   [
-    {:strukt, "~> 0.3"}
+    {:strukt, "~> 0.4.0", hex: :strukt_fork}
   ]
 end
 ```
@@ -220,4 +225,4 @@ iex> {:ok, person} = Person.new(%{NAME: "Ivan", email: "ivan@example.com"})
 
 NOTE: This does not affect serialization/deserialization via `Jason.Encoder` when derived.
 
-For more, see the [usage docs](https://hexdocs.pm/strukt/usage.html)
+For more, see the [usage docs](https://hexdocs.pm/strukt_fork/usage.html)

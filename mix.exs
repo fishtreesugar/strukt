@@ -3,21 +3,24 @@
 defmodule Strukt.MixProject do
   use Mix.Project
 
+  @source_url "https://github.com/fishtreesugar/strukt"
+
   def project do
     [
       app: :strukt,
-      version: "0.3.2",
-      elixir: "~> 1.14",
+      version: "0.4.0",
+      elixir: "~> 1.17",
       description: description(),
       package: package(),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       elixirc_paths: elixirc_paths(Mix.env()),
       name: "Strukt",
-      source_url: "https://github.com/bitwalker/strukt",
-      homepage_url: "http://github.com/bitwalker/strukt",
+      source_url: @source_url,
+      homepage_url: @source_url,
       docs: [
         main: "readme",
+        source_ref: "cdc-fixes",
         api_reference: false,
         extra_section: "Extras",
         extras: [
@@ -66,11 +69,12 @@ defmodule Strukt.MixProject do
 
   defp package do
     [
-      files: ["lib", "mix.exs", "README.md", "LICENSE.md"],
-      maintainers: ["Paul Schoenfelder"],
+      name: "strukt_fork",
+      files: ["lib", "mix.exs", "README.md", "CHANGELOG.md", "LICENSE.md"],
+      maintainers: ["fishtreesugar"],
       licenses: ["Apache-2.0"],
       links: %{
-        GitHub: "https://github.com/bitwalker/strukt"
+        GitHub: @source_url
       }
     ]
   end
