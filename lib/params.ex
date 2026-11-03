@@ -11,7 +11,7 @@ defmodule Strukt.Params do
       do: params
 
   # Scalar params have no fields to map. Preserve them so Ecto can report the type mismatch
-  # instead of crashing in get_params_field_value/3.
+  # instead of treating them as field maps.
   def transform(_module, params, _struct)
       when not is_map(params) and not is_list(params) and not is_nil(params),
       do: params
@@ -54,19 +54,25 @@ defmodule Strukt.Params do
   defp transform(_module, params, _struct, cardinality: :many), do: params
 
   defp transform_from_struct(module, params, struct) do
-    struct
-    |> Map.from_struct()
-    |> Enum.map(fn {key, _value} ->
-      case module.__schema__(:field_source, key) do
-        nil ->
-          {key, get_params_field_value(params, key, struct)}
+    params = if is_list(params), do: Map.new(params), else: params
 
-        source_field_name ->
-          value = get_params_field_value(params, source_field_name, struct)
-          map_value_to_field(module, key, value, struct)
+    Map.new(Map.from_struct(struct), fn {field, current} ->
+      source = module.__schema__(:field_source, field) || field
+      # Struct inputs historically expose source keys; ordinary params also accept schema keys.
+      case fetch_param(params, source) do
+        {:ok, value} ->
+          map_value_to_field(module, field, value, struct)
+
+        :error when is_struct(params) ->
+          {field, Map.get(struct, source)}
+
+        :error ->
+          case fetch_param(params, field) do
+            {:ok, value} -> map_value_to_field(module, field, value, struct)
+            :error -> {field, current}
+          end
       end
     end)
-    |> Map.new()
   end
 
   defp map_value_to_field(module, field, value, struct) do
@@ -134,7 +140,7 @@ defmodule Strukt.Params do
 
       embedded_module ->
         type_field_name = polymorphic_type_field_name(module, field)
-        type = get_params_field_value(params, type_field_name, nil)
+        type = Map.get(params, type_field_name, Map.get(params, to_string(type_field_name)))
         struct = polymorphic_struct_for_module(struct, embedded_module)
 
         embedded_module
@@ -168,24 +174,10 @@ defmodule Strukt.Params do
   defp maybe_put_polymorphic_type(params, type_field_name, type),
     do: Map.put(params, type_field_name, type)
 
-  defp get_params_field_value(nil, _field, _struct), do: nil
+  defp fetch_param(nil, _field), do: :error
 
-  defp get_params_field_value(params, field, struct) when is_list(params) do
-    case params[field] do
-      nil -> get_struct_field_value(struct, field)
-      value -> value
-    end
-  end
-
-  defp get_params_field_value(params, field, struct) when is_map(params) do
-    atom_key_value = Map.get(params, field)
-    string_key_value = Map.get(params, field |> to_string())
-
-    case {atom_key_value, string_key_value} do
-      {nil, nil} -> get_struct_field_value(struct, field)
-      {atom_key_value, nil} -> atom_key_value
-      {nil, string_key_value} -> string_key_value
-    end
+  defp fetch_param(params, field) do
+    with :error <- Map.fetch(params, field), do: Map.fetch(params, to_string(field))
   end
 
   defp get_struct_field_value(struct, field) do
