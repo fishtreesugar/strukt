@@ -612,31 +612,8 @@ defmodule Strukt do
         end
       end
 
-      defp __cast_polymorphic_embeds__(changeset, []), do: changeset
-
-      if length(@cast_polymorphic_embed_fields) > 0 do
-        defp __cast_polymorphic_embeds__(%Ecto.Changeset{params: params} = changeset, [
-               field | fields
-             ]) do
-          f = to_string(field)
-
-          changeset =
-            case Map.get(params, f) do
-              nil ->
-                changeset
-
-              %_{} = entity ->
-                Ecto.Changeset.put_change(changeset, field, entity)
-
-              [%_{} | _] = entities ->
-                Ecto.Changeset.put_change(changeset, field, entities)
-
-              _other ->
-                PolymorphicEmbed.cast_polymorphic_embed(changeset, field)
-            end
-
-          __cast_polymorphic_embeds__(changeset, fields)
-        end
+      defp __cast_polymorphic_embeds__(changeset, fields) do
+        Enum.reduce(fields, changeset, &Strukt.Params.cast_polymorphic_embed/2)
       end
 
       @doc """

@@ -174,6 +174,75 @@ defmodule Strukt.Params do
   defp maybe_put_polymorphic_type(params, type_field_name, type),
     do: Map.put(params, type_field_name, type)
 
+  @doc false
+  def cast_polymorphic_embed(field, changeset) do
+    value = changeset.params[to_string(field)]
+
+    case {changeset.types[field], value} do
+      {_, nil} ->
+        changeset
+
+      {{:array, {:parameterized, {PolymorphicEmbed, opts}}}, values} when is_list(values) ->
+        cond do
+          not Enum.all?(values, &valid_embed_input?(&1, opts)) ->
+            Ecto.Changeset.add_error(changeset, field, "is invalid")
+
+          Enum.any?(values, &is_struct/1) ->
+            cast_mixed_embeds(changeset, field, values)
+
+          true ->
+            PolymorphicEmbed.cast_polymorphic_embed(changeset, field)
+        end
+
+      {{:parameterized, {PolymorphicEmbed, opts}}, %_{} = entity} ->
+        if valid_embed_input?(entity, opts) do
+          Ecto.Changeset.put_change(changeset, field, entity)
+        else
+          Ecto.Changeset.add_error(changeset, field, "is invalid")
+        end
+
+      {_, params} when is_map(params) and not is_struct(params) ->
+        PolymorphicEmbed.cast_polymorphic_embed(changeset, field)
+
+      _ ->
+        Ecto.Changeset.add_error(changeset, field, "is invalid")
+    end
+  end
+
+  defp valid_embed_input?(%module{}, opts),
+    do: Enum.any?(opts.types_metadata, &(&1.module == module))
+
+  defp valid_embed_input?(value, _opts), do: is_map(value)
+
+  defp cast_mixed_embeds(changeset, field, values) do
+    key = to_string(field)
+
+    result =
+      Enum.reduce_while(values, {[], changeset.valid?}, fn
+        %_{} = entity, {acc, valid?} ->
+          {:cont, {[entity | acc], valid?}}
+
+        params, {acc, valid?} ->
+          single = %{changeset | params: Map.put(changeset.params, key, [params])}
+          cast = PolymorphicEmbed.cast_polymorphic_embed(single, field)
+
+          if cast.errors != changeset.errors do
+            {:halt, {:error, cast.errors}}
+          else
+            embeds = Ecto.Changeset.get_field(cast, field)
+            {:cont, {Enum.reverse(embeds, acc), valid? and cast.valid?}}
+          end
+      end)
+
+    case result do
+      {:error, errors} ->
+        %{changeset | errors: errors, valid?: false}
+
+      {reversed, valid?} ->
+        Ecto.Changeset.put_change(%{changeset | valid?: valid?}, field, Enum.reverse(reversed))
+    end
+  end
+
   defp fetch_param(nil, _field), do: :error
 
   defp fetch_param(params, field) do

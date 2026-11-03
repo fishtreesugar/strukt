@@ -424,6 +424,39 @@ defmodule Strukt.Test do
     assert %{fallback_channels: ["is invalid"]} = changeset_errors(changeset)
   end
 
+  test "polymorphic embeds one rejects an undeclared struct" do
+    assert {:error, changeset} = Fixtures.PolymorphicReminder.new(channel: ~D[2020-01-01])
+    assert %{channel: [_ | _]} = changeset_errors(changeset)
+  end
+
+  test "polymorphic embeds one returns a field error for scalar input" do
+    assert {:error, changeset} = Fixtures.PolymorphicReminder.new(channel: 123)
+    assert %{channel: [_ | _]} = changeset_errors(changeset)
+  end
+
+  test "polymorphic embeds many casts maps alongside already-cast structs in input order" do
+    sms = %Fixtures.PolymorphicSMS{number: "+1"}
+    params = %{__type__: :email, emailAddress: "a@example.com"}
+    email = %Fixtures.PolymorphicEmail{address: "a@example.com"}
+
+    for {input, expected} <- [{[sms, params], [sms, email]}, {[params, sms], [email, sms]}] do
+      assert {:ok, %Fixtures.PolymorphicReminder{fallback_channels: ^expected}} =
+               Fixtures.PolymorphicReminder.new(channel: sms, fallback_channels: input)
+    end
+  end
+
+  test "polymorphic embeds many rejects an undeclared struct after a valid one" do
+    sms = %Fixtures.PolymorphicSMS{number: "+1"}
+
+    assert {:error, changeset} =
+             Fixtures.PolymorphicReminder.new(
+               channel: sms,
+               fallback_channels: [sms, ~D[2020-01-01]]
+             )
+
+    assert %{fallback_channels: [_ | _]} = changeset_errors(changeset)
+  end
+
   test "can deserialize polymorphic embeds from json" do
     json =
       Jason.encode!(%{
