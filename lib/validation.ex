@@ -1,3 +1,5 @@
+# Modified from upstream by the maintainers of the fishtreesugar/strukt fork.
+
 defmodule Strukt.Validation do
   @moduledoc false
 

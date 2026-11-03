@@ -1,3 +1,5 @@
+# Modified from upstream by the maintainers of the fishtreesugar/strukt fork.
+
 defmodule Strukt.Params do
   @moduledoc """
     use Ecto.Schema's reflection to map the params.

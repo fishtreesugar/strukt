@@ -1,3 +1,5 @@
+<!-- Modified from upstream by the maintainers of the fishtreesugar/strukt fork. -->
+
 # JSON Support
 
 Support for JSON serialization is built upon `Ecto.embedded_dump/2`, but must be explicitly enabled. This is to allow

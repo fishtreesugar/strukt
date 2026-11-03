@@ -1,3 +1,5 @@
+# Modified from upstream by the maintainers of the fishtreesugar/strukt fork.
+
 defmodule Strukt do
   import Kernel, except: [defstruct: 1, defstruct: 2]
   import Strukt.Field, only: [is_supported: 1]

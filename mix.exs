@@ -1,3 +1,5 @@
+# Modified from upstream by the maintainers of the fishtreesugar/strukt fork.
+
 defmodule Strukt.MixProject do
   use Mix.Project
 
