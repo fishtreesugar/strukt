@@ -1,5 +1,16 @@
 # Modified from upstream by the maintainers of the fishtreesugar/strukt fork.
 
+defmodule Strukt.Test.SchemaOptions.Redaction do
+  use Strukt
+
+  defstruct do
+    @schema_redact :all_except_primary_keys
+    field(:secret, :string)
+    @schema_redact false
+    field(:public, :string)
+  end
+end
+
 defmodule Strukt.Test.SchemaOptions.Child do
   use Strukt
 
@@ -58,6 +69,7 @@ end
 
 defmodule Strukt.Test.SchemaOptions.Parent do
   use Strukt
+  @derives [Jason.Encoder]
 
   defstruct do
     field(:kind, :string)
@@ -101,5 +113,51 @@ defmodule Strukt.Test.SchemaOptions.Counter do
     n = Process.get(__MODULE__, 0)
     Process.put(__MODULE__, n + 1)
     DateTime.add(~U[2026-01-01 00:00:00Z], n, :second)
+  end
+end
+
+defmodule Strukt.Test.SchemaOptions.Envelope do
+  use Strukt
+  @derives [Jason.Encoder]
+  defstruct do
+    embeds_one(:payload, Strukt.Test.SchemaOptions.Parent, on_replace: :update, source: :PAYLOAD)
+  end
+end
+
+defmodule Strukt.Test.SchemaOptions.BareID do
+  use Ecto.Type
+  def type, do: :binary_id
+
+  def cast(value) do
+    send(self(), {:id_cast, value})
+    Ecto.UUID.cast(value)
+  end
+
+  def load(value), do: Ecto.UUID.load(value)
+  def dump(value), do: Ecto.UUID.dump(value)
+end
+
+defmodule Strukt.Test.SchemaOptions.EctoChild do
+  use Ecto.Schema
+  @primary_key false
+  embedded_schema do
+    field(:name, :string)
+  end
+
+  @type t :: %__MODULE__{name: String.t() | nil}
+  def changeset(data, params), do: Ecto.Changeset.cast(data, params, [:name])
+  def changeset(_data, _params, _opts), do: raise("third argument is not an action")
+end
+
+defmodule Strukt.Test.SchemaOptions.EctoParent do
+  use Strukt
+
+  defstruct do
+    embeds_one(:ordinary, Strukt.Test.SchemaOptions.EctoChild, on_replace: :update)
+
+    polymorphic_embeds_one(:poly,
+      types: [child: Strukt.Test.SchemaOptions.EctoChild],
+      on_replace: :update
+    )
   end
 end

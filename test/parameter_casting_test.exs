@@ -426,4 +426,155 @@ defmodule Strukt.ParameterCastingTest do
       assert {:error, _} = call(parent, :new, [[child: %{__type__: :child, name: "x"}]])
     end
   end
+
+  test "unknown and malformed polymorphic list tags honor ignore and raise policies" do
+    for policy <- [:ignore, :raise] do
+      m = Module.concat(Strukt.Test.SchemaOptions, "ListPolicy#{policy}")
+
+      compile(m, """
+      defstruct do
+        polymorphic_embeds_many :items, types: [child: Strukt.Test.SchemaOptions.Child],
+          on_replace: :delete, on_type_not_found: #{inspect(policy)}
+      end
+      """)
+
+      trusted = %Strukt.Test.SchemaOptions.Child{name: "trusted"}
+
+      for tag <- [:unknown, %{bad: "type"}, nil] do
+        run = fn ->
+          call(m, :new, [[items: [trusted, %{__type__: tag}, %{__type__: :child, name: "cast"}]]])
+        end
+
+        if policy == :raise do
+          assert_raise RuntimeError, ~r/could not infer/, run
+        else
+          assert {:ok, %{items: [^trusted, %{name: "cast"}]}} = run.()
+        end
+      end
+    end
+  end
+
+  test "parent discriminator errors follow the configured policy and mismatches remain explicit" do
+    for policy <- [:nilify, :raise] do
+      m = Module.concat(Strukt.Test.SchemaOptions, "ParentPolicy#{policy}")
+
+      compile(m, """
+      defstruct do
+        field :kind, :string
+        polymorphic_embeds_one :item, types: [child: Strukt.Test.SchemaOptions.Child],
+          on_replace: :update, use_parent_field_for_type: :kind,
+          on_type_not_found: #{inspect(policy)}
+      end
+      """)
+
+      run = fn -> call(m, :new, [[kind: "unknown", item: %{name: "x"}]]) end
+
+      if policy == :raise,
+        do: assert_raise(RuntimeError, ~r/could not infer/, run),
+        else: assert({:ok, %{item: nil}} = run.())
+
+      assert_raise RuntimeError, ~r/does not match/, fn ->
+        call(m, :new, [[kind: "child", item: %{__type__: :other}]])
+      end
+    end
+  end
+
+  test "no-key list updates preserve positional data through pending changes and resizing" do
+    alias Strukt.Test.SchemaOptions, as: Options
+    a = %Options.NoKey{name: "A", note: "saved A"}
+    b = %Options.NoKey{name: "B", note: "saved B"}
+
+    pending =
+      Options.Parent.change(%Options.Parent{no_keys: [a, b]},
+        no_keys: [%{name: "pending A"}, %{}]
+      )
+
+    cs = Options.Parent.change(pending, no_keys: [%{note: "next"}])
+    assert cs.valid?
+    assert Ecto.Changeset.apply_changes(cs).no_keys == [%{a | name: "pending A", note: "next"}]
+  end
+
+  test "nested validators receive insert and update actions for both embed cardinalities" do
+    child = Strukt.Test.SchemaOptions.ActionChild
+    parent = Strukt.Test.SchemaOptions.ActionParent
+
+    compile(child, """
+    defstruct do
+      field :name, :string
+      field :seen, :string
+    end
+    validation :record
+    defp record(cs, _), do: put_change(cs, :seen, Atom.to_string(cs.action))
+    """)
+
+    compile(parent, """
+    defstruct do
+      embeds_one :one, #{inspect(child)}, on_replace: :update
+      embeds_many :many, #{inspect(child)}, on_replace: :delete
+      polymorphic_embeds_one :poly, types: [child: #{inspect(child)}], on_replace: :update
+      polymorphic_embeds_many :polys, types: [child: #{inspect(child)}], on_replace: :delete
+    end
+    """)
+
+    attrs = %{name: "created", __type__: :child}
+
+    assert {:ok, p} =
+             call(parent, :new, [[one: attrs, many: [attrs], poly: attrs, polys: [attrs]]])
+
+    for field <- [:one, :many, :poly, :polys] do
+      [created] = List.wrap(Map.fetch!(p, field))
+      assert created.seen == "insert"
+      attrs = %{uuid: created.uuid, name: "updated", __type__: :child}
+      attrs = if field in [:many, :polys], do: [attrs], else: attrs
+      cs = call(parent, :change, [p, %{field => attrs}])
+      assert cs.valid?
+      [updated] = List.wrap(Map.fetch!(Ecto.Changeset.apply_changes(cs), field))
+      assert updated.seen == "update"
+    end
+  end
+
+  test "direct polymorphic changesets do not autogenerate omitted or nil keys" do
+    alias Strukt.Test.SchemaOptions.Parent, as: OptionsParent
+
+    for attrs <- [%{__type__: :child}, %{__type__: :child, id: nil}] do
+      cs = OptionsParent.changeset(%OptionsParent{}, %{binary_one: attrs, custom: attrs})
+      assert cs.valid?
+      p = Ecto.Changeset.apply_changes(cs)
+      assert p.binary_one.id == nil
+      assert p.custom.id == nil
+    end
+  end
+
+  test "polymorphic custom IDs and explicit nil binary IDs round trip through JSON" do
+    alias Strukt.Test.SchemaOptions.Parent, as: OptionsParent
+
+    assert {:ok, p} =
+             OptionsParent.new(
+               custom: %{__type__: :child, name: "custom"},
+               binary_one: %{__type__: :child, id: nil},
+               binary_many: [%{__type__: :child, id: nil}]
+             )
+
+    assert is_binary(p.custom.id)
+    assert {:ok, ^p} = p |> Jason.encode!() |> OptionsParent.from_json()
+  end
+
+  test "JSON encoding preserves nil polymorphic IDs inside source-mapped ordinary embeds" do
+    alias Strukt.Test.SchemaOptions.Envelope
+    assert {:ok, envelope} = Envelope.new(payload: %{binary_one: %{__type__: :child, id: nil}})
+    encoded = Jason.encode!(envelope)
+
+    assert %{"PAYLOAD" => %{"binary_one" => %{"id" => nil, "__type__" => "child"}}} =
+             Jason.decode!(encoded)
+
+    assert {:ok, ^envelope} = Envelope.from_json(encoded)
+  end
+
+  test "plain Ecto children retain changeset/2 even when they define changeset/3" do
+    assert {:ok, %{ordinary: %{name: "ordinary"}, poly: %{name: "poly"}}} =
+             Strukt.Test.SchemaOptions.EctoParent.new(
+               ordinary: %{name: "ordinary"},
+               poly: %{__type__: :child, name: "poly"}
+             )
+  end
 end

@@ -141,7 +141,7 @@ defmodule Strukt.Params do
 
   defp transform_polymorphic(module, field, params, struct, opts \\ [])
 
-  # Keep nil as-is so required validation and PolymorphicEmbed's own handling can run later.
+  # Keep nil as-is so clearing and required validation can run later.
   defp transform_polymorphic(_module, _field, nil, _struct, _opts), do: nil
 
   # Struct params have already been cast by the caller, so leave them untouched.
@@ -167,9 +167,12 @@ defmodule Strukt.Params do
       {param, index} ->
         selected =
           if is_map(param) do
-            case PolymorphicEmbed.get_polymorphic_module(module, field, param) do
-              nil -> nil
-              embedded_module -> current_embed(embedded_module, param, current, index, :source)
+            case infer_polymorphic(polymorphic_options(module, field), param) do
+              {:ok, embedded_module} ->
+                current_embed(embedded_module, param, current, index, :source)
+
+              _ ->
+                nil
             end
           end
 
@@ -178,39 +181,36 @@ defmodule Strukt.Params do
   end
 
   # Normalize maps using their inferred variant, or the current single embed for partial updates.
-  # Without either context, leave type-not-found handling to PolymorphicEmbed.
+  # Without either context, leave type-not-found handling to the casting policy.
   defp transform_polymorphic(module, field, params, struct, opts) when is_map(params) do
-    inferred =
-      case Keyword.fetch(opts, :parent_type) do
-        {:ok, nil} -> nil
-        {:ok, type} -> PolymorphicEmbed.get_polymorphic_module(module, field, to_string(type))
-        :error -> PolymorphicEmbed.get_polymorphic_module(module, field, params)
-      end
-
+    field_opts = polymorphic_options(module, field)
     struct = embedded_data(struct)
 
-    current_module =
-      if not Keyword.has_key?(opts, :parent_type) and is_struct(struct), do: struct.__struct__
+    selected =
+      case Keyword.fetch(opts, :parent_type) do
+        {:ok, type} -> variant_module(field_opts, type)
+        :error -> resolve_polymorphic(field_opts, params, struct)
+      end
 
-    case inferred || current_module do
-      nil ->
-        params
-
-      embedded_module ->
-        type_field_name = polymorphic_type_field_name(module, field)
+    case selected do
+      {:ok, embedded_module} ->
+        type_field_name = field_opts.type_field_name
 
         type =
-          Map.get(params, type_field_name, Map.get(params, to_string(type_field_name))) ||
-            if(inferred, do: PolymorphicEmbed.get_polymorphic_type(module, field, inferred))
+          case fetch_param(params, type_field_name) do
+            {:ok, type} -> type
+            :error -> PolymorphicEmbed.get_polymorphic_type(module, field, embedded_module)
+          end
 
         struct = polymorphic_struct_for_module(struct, embedded_module)
 
         embedded_module
         |> transform(params, struct)
         |> maybe_put_polymorphic_type(type_field_name, type)
+
+      _ ->
+        params
     end
-  rescue
-    _ -> params
   end
 
   # Leave invalid shapes alone so the eventual cast can report the type error.
@@ -219,18 +219,56 @@ defmodule Strukt.Params do
   defp polymorphic_struct_for_module(struct, module) when is_struct(struct, module), do: struct
   defp polymorphic_struct_for_module(_struct, _module), do: nil
 
-  # The type marker must be restored after source-field mapping, otherwise PolymorphicEmbed
-  # cannot infer which embedded schema to cast.
-  defp polymorphic_type_field_name(module, field) do
+  defp polymorphic_options(module, field) do
     case module.__schema__(:type, field) do
-      {:parameterized, {PolymorphicEmbed, opts}} ->
-        opts.type_field_name
-
-      {:array, {:parameterized, {PolymorphicEmbed, opts}}} ->
-        opts.type_field_name
+      {:parameterized, {PolymorphicEmbed, opts}} -> opts
+      {:array, {:parameterized, {PolymorphicEmbed, opts}}} -> opts
     end
   end
 
+  defp variant_module(opts, type) when is_atom(type) or is_binary(type) do
+    case Enum.find(opts.types_metadata, &(to_string(&1.type) == to_string(type))) do
+      %{module: module} -> {:ok, module}
+      nil -> :error
+    end
+  end
+
+  defp variant_module(_opts, _type), do: :error
+
+  defp infer_polymorphic(opts, params) do
+    case fetch_param(params, opts.type_field_name) do
+      {:ok, nil} ->
+        :error
+
+      {:ok, type} ->
+        variant_module(opts, type)
+
+      :error ->
+        keys = for key <- Map.keys(params), is_atom(key) or is_binary(key), do: to_string(key)
+
+        case Enum.find(opts.types_metadata, fn meta ->
+               meta.identify_by_fields != [] and
+                 Enum.all?(meta.identify_by_fields, &(to_string(&1) in keys))
+             end) do
+          %{module: module} -> {:ok, module}
+          nil -> :missing
+        end
+    end
+  end
+
+  defp resolve_polymorphic(opts, params, current) do
+    case infer_polymorphic(opts, params) do
+      :missing ->
+        if is_struct(current) and valid_embed_input?(current, opts),
+          do: {:ok, current.__struct__},
+          else: :error
+
+      result ->
+        result
+    end
+  end
+
+  # Restore the type marker after source mapping so casting can select the variant.
   defp maybe_put_polymorphic_type(params, _type_field_name, nil), do: params
 
   defp maybe_put_polymorphic_type(params, type_field_name, type),
@@ -266,61 +304,80 @@ defmodule Strukt.Params do
     struct_inputs? =
       relation.cardinality == :many and is_list(values) and Enum.any?(values, &is_struct/1)
 
+    current = Ecto.Changeset.get_field(changeset, field)
+    original = Map.fetch!(changeset.data, field)
     pending? = Map.has_key?(changeset.changes, field)
+    no_keys? = relation.related.__schema__(:primary_key) == []
 
-    # Ecto casts relations against changeset.data. Reuse pending embedded values when
-    # updating an existing changeset so a second partial update does not discard them.
-    if pending? or struct_inputs? do
-      current = Ecto.Changeset.get_field(changeset, field)
+    with_callback =
+      case relation.cardinality do
+        :one ->
+          fn fresh, params ->
+            action = embed_action(relation, fresh, original)
 
-      with_callback =
-        case relation.cardinality do
-          :one ->
-            fn fresh, params ->
-              cast_pending_embed(fresh, params, current, relation.on_replace == :update)
+            if pending?,
+              do:
+                cast_pending_embed(fresh, params, current, action, relation.on_replace == :update),
+              else: cast_child(fresh, params, action)
+          end
+
+        :many ->
+          fn fresh, params, index ->
+            action = embed_action(relation, fresh, original)
+
+            case Enum.at(values, index) do
+              %_{} = entity ->
+                data = current_embed(fresh.__struct__, entity, List.wrap(current), index) || fresh
+                Ecto.Changeset.change(data, Map.from_struct(entity))
+
+              _ when pending? or no_keys? ->
+                selected = current_embed(fresh.__struct__, params, List.wrap(current), index)
+                cast_pending_embed(fresh, params, selected, action)
+
+              _ ->
+                cast_child(fresh, params, action)
             end
+          end
+      end
 
-          :many ->
-            fn fresh, params, index ->
-              case Enum.at(values, index) do
-                %_{} = entity ->
-                  data =
-                    current_embed(fresh.__struct__, entity, List.wrap(current), index) || fresh
+    if struct_inputs? do
+      if Enum.all?(values, &(not is_struct(&1) or is_struct(&1, relation.related))) do
+        params =
+          Enum.map(values, fn
+            %_{} = entity -> Map.from_struct(entity)
+            params -> params
+          end)
 
-                  Ecto.Changeset.change(data, Map.from_struct(entity))
-
-                _ when pending? ->
-                  selected = current_embed(fresh.__struct__, params, List.wrap(current), index)
-                  cast_pending_embed(fresh, params, selected)
-
-                _ ->
-                  fresh.__struct__.changeset(fresh, params)
-              end
-            end
-        end
-
-      if struct_inputs? do
-        if Enum.all?(values, &(not is_struct(&1) or is_struct(&1, relation.related))) do
-          params =
-            Enum.map(values, fn
-              %_{} = entity -> Map.from_struct(entity)
-              params -> params
-            end)
-
-          %{changeset | params: Map.put(changeset.params, to_string(field), params)}
-          |> Ecto.Changeset.cast_embed(field, with: with_callback)
-          |> Map.put(:params, changeset.params)
-        else
-          Ecto.Changeset.add_error(changeset, field, "is invalid",
-            validation: :embed,
-            type: {:array, :map}
-          )
-        end
+        %{changeset | params: Map.put(changeset.params, to_string(field), params)}
+        |> Ecto.Changeset.cast_embed(field, with: with_callback)
+        |> Map.put(:params, changeset.params)
       else
-        Ecto.Changeset.cast_embed(changeset, field, with: with_callback)
+        Ecto.Changeset.add_error(changeset, field, "is invalid",
+          validation: :embed,
+          type: {:array, :map}
+        )
       end
     else
-      Ecto.Changeset.cast_embed(changeset, field)
+      Ecto.Changeset.cast_embed(changeset, field, with: with_callback)
+    end
+  end
+
+  defp embed_action(%{cardinality: :one, on_replace: :update}, _fresh, original)
+       when not is_nil(original),
+       do: :update
+
+  defp embed_action(relation, fresh, original) do
+    if relation.related.__schema__(:primary_key) != [] and fresh in List.wrap(original),
+      do: :update,
+      else: :insert
+  end
+
+  defp cast_child(%module{} = data, params, action) do
+    if Strukt in List.flatten(Keyword.get_values(module.__info__(:attributes), :behaviour)) do
+      module.changeset(data, params, action)
+    else
+      # Ecto schemas that are not Strukt schemas retain the conventional callback.
+      data |> module.changeset(params) |> Map.put(:action, action)
     end
   end
 
@@ -353,7 +410,7 @@ defmodule Strukt.Params do
     Enum.filter(fields, &(fetch_param(params, &1) != :error))
   end
 
-  defp cast_pending_embed(%module{}, params, current, update? \\ false) do
+  defp cast_pending_embed(%module{}, params, current, action, update? \\ false) do
     same_identity? =
       is_struct(current, module) and
         (update? or
@@ -367,7 +424,7 @@ defmodule Strukt.Params do
              end
            end))
 
-    module.changeset(if(same_identity?, do: current, else: struct(module)), params)
+    cast_child(if(same_identity?, do: current, else: struct(module)), params, action)
   end
 
   @doc false
@@ -410,9 +467,9 @@ defmodule Strukt.Params do
           Ecto.Changeset.add_error(changeset, field, "is invalid")
         end
 
-      {{:parameterized, {PolymorphicEmbed, _opts}}, params}
+      {{:parameterized, {PolymorphicEmbed, opts}}, params}
       when is_map(params) and not is_struct(params) ->
-        cast_polymorphic_one(changeset, field)
+        cast_polymorphic_one(changeset, field, params, opts)
 
       _ ->
         Ecto.Changeset.add_error(changeset, field, "is invalid")
@@ -424,66 +481,95 @@ defmodule Strukt.Params do
 
   defp valid_embed_input?(value, _opts), do: is_map(value)
 
-  defp cast_polymorphic_one(changeset, field) do
-    # The dependency selects a single embed's type and data from changeset.data.
-    # Cast against the effective value, then record the result against the original data.
+  defp cast_polymorphic_one(changeset, field, params, opts) do
     current = changeset |> Ecto.Changeset.get_field(field) |> embedded_data()
 
-    working = %{
-      changeset
-      | data: Map.put(changeset.data, field, current),
-        changes: Map.delete(changeset.changes, field)
-    }
+    selected =
+      if parent_field = opts.use_parent_field_for_type do
+        parent_type = Ecto.Changeset.get_field(changeset, parent_field)
 
-    cast = PolymorphicEmbed.cast_polymorphic_embed(working, field)
-    value = Ecto.Changeset.get_field(cast, field)
-    Ecto.Changeset.put_change(%{cast | data: changeset.data}, field, value)
+        case {variant_module(opts, parent_type), fetch_param(params, opts.type_field_name)} do
+          {{:ok, module}, :error} ->
+            {:ok, module}
+
+          {{:ok, module}, {:ok, type}} when is_atom(type) or is_binary(type) ->
+            if to_string(parent_type) == to_string(type),
+              do: {:ok, module},
+              else:
+                raise(
+                  "type specified in the parent field #{inspect(parent_type)} does not match the type in the embedded map #{inspect(type)}"
+                )
+
+          _ ->
+            :error
+        end
+      else
+        resolve_polymorphic(opts, params, current)
+      end
+
+    case selected do
+      {:ok, module} ->
+        data = polymorphic_struct_for_module(current, module)
+        cs = cast_child(data || struct(module), params, if(data, do: :update, else: :insert))
+        put_polymorphic(changeset, field, polymorphic_value(cs), cs.valid?)
+
+      _ ->
+        unknown_polymorphic(changeset, field, params, opts.on_type_not_found)
+    end
   end
 
   defp cast_polymorphic_many(changeset, field, values, opts) do
-    key = to_string(field)
     current = List.wrap(Ecto.Changeset.get_field(changeset, field))
 
     result =
       values
       |> Enum.with_index()
-      |> Enum.reduce_while({[], changeset.valid?}, fn
+      |> Enum.reduce_while({[], true}, fn
         {%_{} = entity, _index}, {acc, valid?} ->
           {:cont, {[entity | acc], valid?}}
 
         {params, index}, {acc, valid?} ->
-          single = %{changeset | params: Map.put(changeset.params, key, [params])}
+          case infer_polymorphic(opts, params) do
+            {:ok, module} ->
+              data = current_embed(module, params, current, index)
 
-          # Use the same identity matching as transformation, without recasting omitted fields.
-          callbacks = polymorphic_callbacks(opts, current, index)
-          cast = PolymorphicEmbed.cast_polymorphic_embed(single, field, with: callbacks)
+              cs =
+                cast_child(data || struct(module), params, if(data, do: :update, else: :insert))
 
-          if cast.errors != changeset.errors do
-            {:halt, {:error, cast.errors}}
-          else
-            embeds = Ecto.Changeset.get_field(cast, field)
-            {:cont, {Enum.reverse(embeds, acc), valid? and cast.valid?}}
+              {:cont, {[polymorphic_value(cs) | acc], valid? and cs.valid?}}
+
+            _ when opts.on_type_not_found == :ignore ->
+              {:cont, {acc, valid?}}
+
+            _ ->
+              {:halt,
+               {:error, unknown_polymorphic(changeset, field, params, opts.on_type_not_found)}}
           end
       end)
 
     case result do
-      {:error, errors} ->
-        %{changeset | errors: errors, valid?: false}
-
-      {reversed, valid?} ->
-        Ecto.Changeset.put_change(%{changeset | valid?: valid?}, field, Enum.reverse(reversed))
+      {:error, changeset} -> changeset
+      {reversed, valid?} -> put_polymorphic(changeset, field, Enum.reverse(reversed), valid?)
     end
   end
 
-  defp polymorphic_callbacks(opts, current, index) do
-    Enum.map(opts.types_metadata, fn %{type: type, module: module} ->
-      {type,
-       fn _fresh, params ->
-         data = current_embed(module, params, current, index) || struct(module)
-         module.changeset(data, params)
-       end}
-    end)
+  defp polymorphic_value(%Ecto.Changeset{valid?: true} = cs), do: Ecto.Changeset.apply_changes(cs)
+  defp polymorphic_value(cs), do: cs
+
+  defp put_polymorphic(changeset, field, value, valid?) do
+    changeset
+    |> Ecto.Changeset.put_change(field, value)
+    |> Map.put(:valid?, changeset.valid? and valid?)
   end
+
+  defp unknown_polymorphic(changeset, field, _params, :nilify),
+    do: Ecto.Changeset.put_change(changeset, field, nil)
+
+  defp unknown_polymorphic(_changeset, _field, params, :raise),
+    do: raise("could not infer polymorphic embed from data #{inspect(params)}")
+
+  defp unknown_polymorphic(changeset, field, _params, :changeset_error),
+    do: Ecto.Changeset.add_error(changeset, field, "is invalid")
 
   # Explicit keys must never fall back to another entry's position, even if the key
   # is nil, invalid, incomplete, or does not match any current entry.

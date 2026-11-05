@@ -378,16 +378,6 @@ defmodule Strukt.SchemaDeclarationsTest do
 
   test "schema redaction is captured at each field declaration" do
     m = Strukt.Test.SchemaOptions.Redaction
-
-    compile(m, """
-    defstruct do
-      @schema_redact :all_except_primary_keys
-      field :secret, :string
-      @schema_redact false
-      field :public, :string
-    end
-    """)
-
     assert call(m, :__schema__, [:redact_fields]) == [:secret]
     refute inspect(struct(m, secret: "example-secret")) =~ "example-secret"
   end
@@ -474,6 +464,7 @@ defmodule Strukt.SchemaDeclarationsTest do
     @enabled true
     validation :reject when @enabled
     @enabled false
+    def enabled?, do: @enabled
     defstruct do
       field :name, :string
     end
@@ -481,6 +472,7 @@ defmodule Strukt.SchemaDeclarationsTest do
     """)
 
     assert {:error, _} = call(m, :new, [[name: "a"]])
+    refute call(m, :enabled?, [])
   end
 
   for {kind, declaration} <- [
@@ -505,5 +497,117 @@ defmodule Strukt.SchemaDeclarationsTest do
     m = Strukt.Test.SchemaOptions.AttributeOnly
     compile(m, "defstruct do\n@primary_key false\nend")
     assert call(m, :__schema__, [:primary_key]) == []
+  end
+
+  test "deferred functions retain self struct defaults, aliases, attributes and quoted code" do
+    m = Strukt.Test.SchemaOptions.FunctionContext
+
+    compile(m, ~S'''
+    defstruct do
+      @label "first"
+      alias Strukt.Test.SchemaOptions.Child, as: Item
+      field :name, :string, default: @label
+      @doc @label
+      def build(value \\ %__MODULE__{}), do: {value, @label, struct(Item)}
+      @label "second"
+      alias Strukt.Test.SchemaOptions.NoKey, as: Item
+      field :other, :string, default: @label
+      def second, do: {@label, struct(Item)}
+      def quoted, do: quote(do: @label)
+      def unquoted, do: quote(do: unquote(@label))
+      def bound, do: quote(bind_quoted: [label: @label], do: label)
+      @unquote? true
+      def flagged, do: quote(unquote: @unquote?, do: unquote(@label))
+      @label "third"
+      def third, do: @label
+      field :last, :string, default: @label
+    end
+    ''')
+
+    assert {%{name: "first", other: "second"}, "first", %Strukt.Test.SchemaOptions.Child{}} =
+             call(m, :build, [])
+
+    assert {"second", %Strukt.Test.SchemaOptions.NoKey{}} = call(m, :second, [])
+    assert {:@, _, [{:label, _, _}]} = call(m, :quoted, [])
+    assert call(m, :unquoted, []) == "second"
+    assert {"second", _} = Code.eval_quoted(call(m, :bound, []))
+    assert call(m, :flagged, []) == "second"
+    assert call(m, :third, []) == "third"
+  end
+
+  test "functions after fields can construct and return their completed struct" do
+    m = Strukt.Test.SchemaOptions.StructBody
+
+    compile(m, """
+    defstruct do
+      field :name, :string, default: "ready"
+      def helper, do: :ok
+      @example "ready"
+      def example, do: %__MODULE__{name: @example}
+    end
+    """)
+
+    assert %{name: "ready"} = call(m, :example, [])
+  end
+
+  test "binary ID types without a generator cast the generated UUID through their type" do
+    m = Strukt.Test.SchemaOptions.FallbackID
+
+    compile(m, """
+    @primary_key {:id, Strukt.Test.SchemaOptions.BareID, autogenerate: true}
+    defstruct do
+      field :name
+    end
+    """)
+
+    assert {:ok, %{id: id}} = call(m, :new, [])
+    assert {:ok, ^id} = Ecto.UUID.cast(id)
+    assert_received {:id_cast, ^id}
+  end
+
+  test "field source mapper and timestamp options are captured per declaration" do
+    m = Strukt.Test.SchemaOptions.FieldContext
+
+    compile(m, """
+    @primary_key false
+    defstruct do
+      @field_source_mapper fn name -> String.to_atom("first_" <> Atom.to_string(name)) end
+      field :name, :string
+      @field_source_mapper fn name -> String.to_atom("next_" <> Atom.to_string(name)) end
+      field :label, :string
+      @timestamps_opts [type: :utc_datetime_usec]
+      timestamps()
+      @timestamps_opts [type: :naive_datetime]
+    end
+    """)
+
+    assert call(m, :__schema__, [:field_source, :name]) == :first_name
+    assert call(m, :__schema__, [:field_source, :label]) == :next_label
+    assert call(m, :__schema__, [:type, :inserted_at]) == :utc_datetime_usec
+  end
+
+  test "dynamic field and inline embed options evaluate once in source order" do
+    m = Strukt.Test.SchemaOptions.DynamicOptions
+
+    compile(m, """
+    defstruct do
+      field :name, :string,
+        (send(self(), :options); [default: "a", one_of: ["a"]])
+      @opts [on_replace: :update, required: true]
+      embeds_one :child, Child, @opts do
+        field :name
+      end
+    end
+    """)
+
+    assert_received :options
+    refute_received :options
+    assert {:error, cs} = call(m, :new, [])
+    assert Keyword.has_key?(cs.errors, :child)
+
+    assert {:ok, %{name: "a", child: %{name: "child"}}} =
+             call(m, :new, [[child: %{name: "child"}]])
+
+    assert {:error, _} = call(m, :new, [[name: "b", child: %{name: "child"}]])
   end
 end

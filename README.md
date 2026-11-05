@@ -12,12 +12,10 @@ This builds on top of Ecto embedded schemas, so the same familiar syntax you use
 to define schema'd types in Ecto, can now be used to define structs for general purpose
 usage.
 
-The functionality provided by the `defstruct` macro in this module is strictly a superset
-of the functionality provided both by `Kernel.defstruct/1`, as well as `Ecto.Schema`. If
-you import it in a scope where you use `Kernel.defstruct/1` already, it will not interfere.
-Likewise, the support for defining validation rules inline with usage of `field/3`, `embeds_one/3`,
-etc., is strictly additive, and those additions are stripped from the AST before `field/3`
-and friends ever see it.
+`defstruct` accepts ordinary `Kernel.defstruct/1` field lists and schema blocks containing
+`field`, `embeds_one`, `embeds_many`, polymorphic embeds, and `timestamps` declarations.
+Database associations such as `belongs_to` and `has_many` are not supported.
+Inline validation options are separated from the options passed to Ecto after evaluation.
 
 ## Installation
 

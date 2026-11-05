@@ -1,5 +1,20 @@
 # 0.4.1
 
+- Preserve field declaration context, including redaction, source mappers, timestamp
+  options, aliases, and constants interleaved with functions. Validation guards capture
+  attributes at their declaration, and functions can reference their completed struct.
+- Support evaluated option expressions for fields and embeds, implicit string fields,
+  and schemas containing only attributes.
+- Handle malformed and explicitly unknown polymorphic tags through `on_type_not_found`,
+  including existing single variants and unknown parent discriminator values.
+- Generate custom and parameterized primary keys, and run grouped generators once so
+  initial timestamps agree.
+- Preserve explicit nil polymorphic primary keys during casting and Strukt JSON encoding.
+  Direct polymorphic changesets now leave omitted keys unset, matching ordinary embeds.
+- Preserve omitted fields in positional updates to ordinary embed lists without keys.
+- Assign Strukt child changeset actions before validation, so nested insert/update guards
+  execute. Ordinary replacement actions and trusted-struct validation behavior are retained.
+- Clarify supported schema declarations, nested validation, and JSON encoding behavior.
 - Persist trusted struct updates to existing ordinary embed lists and reject foreign structs
   in ordinary single embeds.
 - Cast only newly supplied embed fields when updating a changeset, preserving deleted or
