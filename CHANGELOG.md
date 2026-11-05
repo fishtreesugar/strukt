@@ -1,5 +1,48 @@
 # 0.4.1
 
+- Preserve field declaration context, including redaction, source mappers, timestamp
+  options, aliases, and constants interleaved with functions. Validation guards capture
+  attributes at their declaration, and functions can reference their completed struct.
+- Support evaluated option expressions for fields and embeds, implicit string fields,
+  and schemas containing only attributes.
+- Handle malformed and explicitly unknown polymorphic tags through `on_type_not_found`,
+  including existing single variants and unknown parent discriminator values.
+- Generate custom and parameterized primary keys, and run grouped generators once so
+  initial timestamps agree.
+- Preserve explicit nil polymorphic primary keys during casting and Strukt JSON encoding.
+  Direct polymorphic changesets now leave omitted keys unset, matching ordinary embeds.
+- Preserve omitted fields in positional updates to ordinary embed lists without keys.
+- Assign Strukt child changeset actions before validation, so nested insert/update guards
+  execute. Ordinary replacement actions and trusted-struct validation behavior are retained.
+- Clarify supported schema declarations, nested validation, and JSON encoding behavior.
+- Persist trusted struct updates to existing ordinary embed lists and reject foreign structs
+  in ordinary single embeds.
+- Cast only newly supplied embed fields when updating a changeset, preserving deleted or
+  manually edited changes instead of replaying historical parameters.
+- Select the new polymorphic variant before normalization when using a parent discriminator,
+  including source aliases, enum values, and pending parent changes.
+- Autogenerate built-in `:binary_id` primary keys during construction, including nested embeds.
+- Evaluate field options once in declaration order, including primary-key flags; type
+  declarations no longer delay constants needed by following fields.
+- Include nullable array elements and typed-map values in generated types.
+- Preserve single ordinary embed IDs and pending fields during direct changeset updates
+  with `on_replace: :update`, including updates that omit the primary key.
+- Normalize source aliases in tagless polymorphic updates using the current variant;
+  schema struct inputs always use field names, even when another field's source collides.
+- Handle indexed-map embed collections with the same normalization and identity matching
+  as lists. Mixed ordinary struct/map lists cast correctly, and malformed nested lists
+  return field errors instead of raising.
+- Preserve validators declared before `defstruct`, support guards following validator
+  options, and evaluate schema constants alongside their field declarations.
+- Fix keyword-form range validation, empty inclusion/exclusion/subset sets, and generated
+  typed-map specifications. `primary_key: false` on a field no longer disables the schema key.
+- Correct the README's changeset return values and timestamp precision in JSON round-trips.
+- Fixed polymorphic embeds restoring stale data after clearing or switching types within
+  one changeset, including stale values satisfying required validation.
+- Match embed list updates by supplied primary keys before falling back to position,
+  preserving pending changes during removal and reordering without mixing records.
+- Generate nested primary keys for empty map parameters and preserve inferred polymorphic
+  type tags across source-name normalization.
 - Fixed explicit `nil` updates for ordinary and polymorphic embeds: single embeds clear,
   and embed collections normalize `nil` to `[]`. List elements cannot be `nil`.
   Unlike 0.4.0, clearing existing embeds now observes `on_replace` and required validation;

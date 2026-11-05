@@ -140,7 +140,7 @@ defmodule Strukt.Validation do
                     unquote(field),
                     unquote(range),
                     Keyword.merge(
-                      [message: "must be in the range #{inspect(range)}"],
+                      [message: "must be in the range #{inspect(unquote(range))}"],
                       unquote(opts)
                     )
                   )
@@ -162,7 +162,7 @@ defmodule Strukt.Validation do
             end
 
           :one_of when is_list(data_or_opts) ->
-            if Keyword.keyword?(data_or_opts) do
+            if Keyword.keyword?(data_or_opts) and Keyword.has_key?(data_or_opts, :values) do
               data = Keyword.fetch!(data_or_opts, :values)
               opts = Keyword.drop(data_or_opts, [:values])
 
@@ -191,7 +191,7 @@ defmodule Strukt.Validation do
             end
 
           :none_of when is_list(data_or_opts) ->
-            if Keyword.keyword?(data_or_opts) do
+            if Keyword.keyword?(data_or_opts) and Keyword.has_key?(data_or_opts, :values) do
               data = Keyword.fetch!(data_or_opts, :values)
               opts = Keyword.drop(data_or_opts, [:values])
 
@@ -220,7 +220,7 @@ defmodule Strukt.Validation do
             end
 
           :subset_of when is_list(data_or_opts) ->
-            if Keyword.keyword?(data_or_opts) do
+            if Keyword.keyword?(data_or_opts) and Keyword.has_key?(data_or_opts, :values) do
               data = Keyword.fetch!(data_or_opts, :values)
               opts = Keyword.drop(data_or_opts, [:values])
 

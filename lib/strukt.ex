@@ -2,7 +2,6 @@
 
 defmodule Strukt do
   import Kernel, except: [defstruct: 1, defstruct: 2]
-  import Strukt.Field, only: [is_supported: 1]
 
   @doc """
   See `c:new/1`
@@ -65,6 +64,17 @@ defmodule Strukt do
     :timestamps
   ]
 
+  @definition_types [
+    :def,
+    :defp,
+    :defmacro,
+    :defmacrop,
+    :defdelegate,
+    :defguard,
+    :defguardp,
+    :defoverridable
+  ]
+
   @schema_attrs [
     :primary_key,
     :schema_prefix,
@@ -74,12 +84,18 @@ defmodule Strukt do
     :field_source_mapper
   ]
 
-  @special_attrs @schema_attrs ++ [:moduledoc, :derives]
-
   defmacro __using__(_) do
     quote do
+      Strukt.__register_validators__(__MODULE__)
       import Kernel, except: [defstruct: 1, defstruct: 2, validation: 1, validation: 2]
       import unquote(__MODULE__), only: :macros
+    end
+  end
+
+  @doc false
+  def __register_validators__(module) do
+    unless Module.has_attribute?(module, :strukt_validators) do
+      Module.register_attribute(module, :strukt_validators, accumulate: true)
     end
   end
 
@@ -136,12 +152,23 @@ defmodule Strukt do
   """
   defmacro validation(validator, opts \\ [])
 
+  defmacro validation(validator, {:when, meta, [opts | guards]}) do
+    quote do
+      Strukt.validation(unquote({:when, meta, [validator | guards]}), unquote(opts))
+    end
+  end
+
   defmacro validation({:when, _meta, [validator | guards]}, opts) do
     validator = Macro.expand(validator, %{__CALLER__ | function: {:init, 1}})
 
     quote do
+      Strukt.__register_validators__(__MODULE__)
+
       @strukt_validators {unquote(validator), unquote(opts),
-                          unquote(Macro.escape(guards, unquote: true))}
+                          Strukt.Schema.capture_attributes(
+                            unquote(Macro.escape(guards, unquote: true)),
+                            __ENV__
+                          )}
     end
   end
 
@@ -149,6 +176,7 @@ defmodule Strukt do
     validator = Macro.expand(validator, %{__CALLER__ | function: {:init, 1}})
 
     quote do
+      Strukt.__register_validators__(__MODULE__)
       @strukt_validators {unquote(validator), unquote(opts), true}
     end
   end
@@ -202,14 +230,16 @@ defmodule Strukt do
 
   ## Example
 
-      use Strukt
+      defmodule Entities do
+        use Strukt
 
-      defstruct Person do
-        @derive [Jason.Encoder]
+        defstruct Person do
+          @derives [Jason.Encoder]
 
-        field :name, :string
+          field :name, :string
 
-        def say_hello(%__MODULE__{name: name}), do: "Hello #{name}!"
+          def say_hello(%__MODULE__{name: name}), do: "Hello #{name}!"
+        end
       end
 
   NOTE: Unlike `Strukt.defstruct/1`, which inherits attributes like `@derive` or `@primary_key` from
@@ -219,116 +249,88 @@ defmodule Strukt do
     define_struct(__CALLER__, name, body)
   end
 
-  defp define_struct(env, name, {:__block__, meta, body}) do
-    {special_attrs, body} =
-      Enum.split_with(body, fn
-        {:@, _, [{attr, _, _}]} -> attr in @special_attrs
-        _ -> false
-      end)
-
-    {fields, body} =
-      Enum.split_with(body, fn
-        {field_type, _, _} -> field_type in @field_types
-        _ -> false
-      end)
-
-    {schema_attrs, special_attrs} =
-      Enum.split_with(special_attrs, fn {:@, _, [{attr, _, _}]} -> attr in @schema_attrs end)
-
-    moduledoc = Enum.find(special_attrs, fn {:@, _, [{attr, _, _}]} -> attr == :moduledoc end)
-
-    derives =
-      case Enum.find(special_attrs, fn {:@, _, [{attr, _, _}]} -> attr == :derives end) do
-        {_, _, [{_, _, [derives]}]} ->
-          derives
-
-        nil ->
-          []
+  defp define_struct(_env, name, body) do
+    {meta, nodes} =
+      case body do
+        {:__block__, meta, nodes} -> {meta, nodes}
+        nil -> {[], []}
+        node -> {[], [node]}
       end
 
-    fields = Strukt.Field.parse(fields)
+    # A module body after its last field can use the completed struct directly.
+    # Only definitions interleaved with later fields need deferred evaluation.
+    last_field =
+      nodes
+      |> Enum.with_index()
+      |> Enum.reduce(-1, fn
+        {{type, _, _}, index}, last when type in @field_types -> max(index, last)
+        _, last -> last
+      end)
 
-    define_struct(env, name, meta, moduledoc, derives, schema_attrs, fields, body)
-  end
-
-  # This clause handles the edge case where the definition only contains
-  # a single field and nothing else
-  defp define_struct(env, name, {type, _, _} = field) when is_supported(type) do
-    fields = Strukt.Field.parse([field])
-
-    define_struct(env, name, [], nil, [], [], fields, [])
-  end
-
-  defp define_struct(_env, name, meta, moduledoc, derives, schema_attrs, fields, body) do
-    # Extract macros which should be defined at the top of the module
-    {macros, body} =
-      Enum.split_with(body, fn
-        {node, _meta, _body} -> node in [:use, :import, :alias]
+    tail_index =
+      Enum.find_index(Enum.with_index(nodes), fn
+        {{type, _, _}, index} -> type in @definition_types and index > last_field
         _ -> false
       end)
 
-    # Extract child struct definitions
-    children =
-      fields
-      |> Enum.filter(fn %{type: t, block: block} ->
-        t in [:embeds_one, :embeds_many] and block != nil
+    {nodes, body} = Enum.split(nodes, tail_index || length(nodes))
+
+    {declarations, fields} =
+      Enum.map_reduce(nodes, [], fn
+        {type, _, _} = declaration, fields when type in @field_types ->
+          [field] = Strukt.Field.parse([declaration])
+          value = Macro.unique_var(:strukt_field, __MODULE__)
+          {prepare_field_ast(field, value), [{field, value} | fields]}
+
+        {type, _, _} = definition, fields
+        when type in @definition_types ->
+          ast =
+            quote do
+              Strukt.Schema.defer(__MODULE__, unquote(Macro.escape(definition)), __ENV__)
+            end
+
+          {ast, fields}
+
+        {:@, meta, [{attr, _, [value]}]}, fields when attr in [:doc, :impl, :deprecated] ->
+          ast =
+            quote do
+              Strukt.Schema.defer_attribute(
+                __MODULE__,
+                unquote(attr),
+                unquote(value),
+                unquote(meta),
+                __ENV__
+              )
+            end
+
+          {ast, fields}
+
+        declaration, fields ->
+          {declaration, fields}
       end)
-      |> Enum.map(fn %{value_type: value_type, block: block} ->
-        quote do
-          Strukt.defstruct unquote(value_type) do
-            unquote(block)
-          end
-        end
-      end)
 
-    # Generate validation metadata for the generated module
-    validated_fields =
-      for %{name: name, type: t} = f <- fields, t != :timestamps, reduce: {:%{}, [], []} do
-        {node, meta, elements} ->
-          kvs =
-            Keyword.merge(
-              [
-                type: t,
-                value_type: f.value_type,
-                default: f.options[:default],
-                types: f.options[:types]
-              ],
-              f.validations
-            )
+    fields = Enum.reverse(fields)
 
-          element = {name, {:%{}, [], kvs}}
-          {node, meta, [element | elements]}
-      end
+    cast_fields = for {%{type: :field}, value} <- fields, do: quote(do: unquote(value).name)
 
-    # Get a list of fields valid for `cast/3`
-    cast_fields = for %{type: :field} = f <- fields, do: f.name
+    cast_embed_fields =
+      for {%{type: type}, value} <- fields,
+          type in [:embeds_one, :embeds_many],
+          do: quote(do: unquote(value).name)
 
-    # Get a list of embeds valid for `cast_embed/3`
-    cast_embed_fields = for %{type: t} = f <- fields, t in [:embeds_one, :embeds_many], do: f.name
-
-    # Get a list of polymorphic embeds valid for `PolymorphicEmbed.cast_polymorphic_embed/3`
     cast_polymorphic_embed_fields =
-      for %{type: t} = f <- fields, t in [:polymorphic_embeds_one, :polymorphic_embeds_many] do
-        f.name
-      end
+      for {%{type: type}, value} <- fields,
+          type in [:polymorphic_embeds_one, :polymorphic_embeds_many],
+          do: quote(do: unquote(value).name)
 
-    # Expand fields back to their final AST form
-    fields_ast =
-      fields
-      |> Stream.map(&Strukt.Field.to_ast/1)
-      # Drop any extraneous args (such as inline schema definitions, which have been extracted)
-      |> Enum.map(fn {type, meta, args} -> {type, meta, Enum.take(args, 3)} end)
+    fields_ast = for {field, value} <- fields, do: schema_field_ast(field, value)
 
-    # Make sure the default primary key is defined and castable
-    defines_primary_key? =
-      Enum.any?(fields, &(&1.type == :field and Keyword.has_key?(&1.options, :primary_key)))
+    primary_key_options =
+      for {%{type: :field}, value} <- fields,
+          do: quote(do: Keyword.get(unquote(value).options, :primary_key, false))
 
     quoted =
       quote location: :keep do
-        unquote(moduledoc)
-        unquote_splicing(macros)
-
-        # Capture schema attributes from outer scope, since `use Ecto.Schema` will reset them
         schema_attrs =
           unquote(@schema_attrs)
           |> Enum.map(&{&1, Module.get_attribute(__MODULE__, &1)})
@@ -336,88 +338,48 @@ defmodule Strukt do
 
         use Ecto.Schema
         import Ecto.Changeset, except: [change: 2]
-        import PolymorphicEmbed, only: [polymorphic_embeds_one: 2, polymorphic_embeds_many: 2]
-
         @behaviour unquote(__MODULE__)
         @before_compile unquote(__MODULE__)
+        Strukt.__register_validators__(__MODULE__)
+        Strukt.Schema.register(__MODULE__)
 
-        Module.register_attribute(__MODULE__, :strukt_validators, accumulate: true)
-
-        # Generate child structs before generating the parent
-        unquote_splicing(children)
-
-        # Ensure any schema attributes are set, starting with outer scope, then inner
         for {schema_attr, value} <- schema_attrs do
           Module.put_attribute(__MODULE__, schema_attr, value)
         end
 
-        # Schema attributes defined in module body
-        unquote_splicing(schema_attrs)
+        @validated_fields %{}
+        unquote_splicing(declarations)
 
-        # Ensure a primary key is defined, if one hasn't been by this point
-        defines_primary_key? = unquote(defines_primary_key?)
+        defines_primary_key? = Enum.any?(unquote(primary_key_options), &(&1 == true))
 
         case Module.get_attribute(__MODULE__, :primary_key) do
           nil when not defines_primary_key? ->
-            # Provide the default primary key
             Module.put_attribute(__MODULE__, :primary_key, {:uuid, Ecto.UUID, autogenerate: true})
 
-          pk when defines_primary_key? ->
-            # Primary key is being overridden
+          _ when defines_primary_key? ->
             Module.put_attribute(__MODULE__, :primary_key, false)
 
-          _pk ->
-            # Primary key is set and not overridden
-            nil
+          _ ->
+            :ok
         end
 
         @schema_name Macro.underscore(__MODULE__)
-        @validated_fields unquote(validated_fields)
-        @cast_embed_fields unquote(Macro.escape(cast_embed_fields))
-        @cast_polymorphic_embed_fields unquote(Macro.escape(cast_polymorphic_embed_fields))
+        @cast_embed_fields unquote(cast_embed_fields)
+        @cast_polymorphic_embed_fields unquote(cast_polymorphic_embed_fields)
+        Module.put_attribute(
+          __MODULE__,
+          :cast_fields,
+          case Module.get_attribute(__MODULE__, :primary_key) do
+            false -> unquote(cast_fields)
+            {pk, _, _} -> [pk | unquote(cast_fields)]
+          end
+        )
 
-        # Ensure primary key can be cast, if applicable
-        case Module.get_attribute(__MODULE__, :primary_key) do
-          false ->
-            # Primary key was explicitly disabled
-            Module.put_attribute(__MODULE__, :cast_fields, unquote(Macro.escape(cast_fields)))
+        derives = Module.get_attribute(__MODULE__, :derives) || []
 
-          {pk, _type, _opts} ->
-            # Primary key was defaulted, or set manually via attribute
-            Module.put_attribute(__MODULE__, :cast_fields, [
-              pk | unquote(Macro.escape(cast_fields))
-            ])
-        end
-
-        # Inject or override @derives, without Jason.Encoder if present
-        case Module.get_attribute(__MODULE__, :derives) do
-          derives when derives in [false, nil] or derives == [] ->
-            case unquote(derives) do
-              nil ->
-                nil
-
-              ds ->
-                if Enum.member?(ds, Jason.Encoder) do
-                  Module.put_attribute(__MODULE__, :derives_jason, true)
-
-                  Module.put_attribute(
-                    __MODULE__,
-                    :derives,
-                    Enum.reject(ds, &(&1 == Jason.Encoder))
-                  )
-                end
-            end
-
-          derives ->
-            if Enum.member?(derives, Jason.Encoder) do
-              Module.put_attribute(__MODULE__, :derives_jason, true)
-
-              Module.put_attribute(
-                __MODULE__,
-                :derives,
-                Enum.reject(derives, &(&1 == Jason.Encoder))
-              )
-            end
+        if Jason.Encoder in derives do
+          Module.put_attribute(__MODULE__, :derives_jason, true)
+          Module.put_attribute(__MODULE__, :derives, Enum.reject(derives, &(&1 == Jason.Encoder)))
         end
 
         embedded_schema do
@@ -431,7 +393,7 @@ defmodule Strukt do
 
         If this struct has an autogenerated primary key, it will be generated, assuming it
         was not provided in the set of params. By default, all structs generated by `defstruct`
-        are given a primary key field of `:uuid`, which is autogenerated using `UUID.uuid/4`.
+        are given a primary key field of `:uuid`, which is autogenerated using `Ecto.UUID.generate/0`.
         See the docs for `defstruct` if you wish to change this.
         """
         @impl Strukt
@@ -488,7 +450,8 @@ defmodule Strukt do
 
         defoverridable unquote(__MODULE__)
 
-        unquote(body)
+        Strukt.Schema.emit_definitions(__MODULE__)
+        unquote_splicing(body)
       end
 
     if is_nil(name) do
@@ -499,6 +462,68 @@ defmodule Strukt do
           unquote(quoted)
         end
       end
+    end
+  end
+
+  defp prepare_field_ast(field, value) do
+    child =
+      if field.type in [:embeds_one, :embeds_many] and field.block != nil do
+        quote do
+          Strukt.defstruct unquote(field.value_type) do
+            unquote(field.block)
+          end
+        end
+      end
+
+    quote do
+      unquote(child)
+
+      unquote(value) =
+        Strukt.Schema.field(
+          __MODULE__,
+          unquote(field.name),
+          unquote(field.value_type),
+          unquote(field.type),
+          unquote(field.options)
+        )
+    end
+  end
+
+  defp schema_field_ast(field, value) do
+    declaration =
+      case field.type do
+        :timestamps ->
+          quote do: timestamps(unquote(value).options)
+
+        type when type in [:polymorphic_embeds_one, :polymorphic_embeds_many] ->
+          many? = type == :polymorphic_embeds_many
+          type = if many?, do: {:array, PolymorphicEmbed}, else: PolymorphicEmbed
+          # These are the same field/default options supplied by PolymorphicEmbed's
+          # macros, using the options already evaluated at the declaration site.
+          quote do
+            field(
+              unquote(value).name,
+              unquote(Macro.escape(type)),
+              unquote(value).options
+              |> Keyword.put_new(:array?, unquote(many?))
+              |> Keyword.put_new(:default, unquote(if many?, do: [], else: nil))
+            )
+          end
+
+        type ->
+          {type, field.meta,
+           [
+             quote(do: unquote(value).name),
+             quote(do: unquote(value).value_type),
+             quote(do: unquote(value).options)
+           ]}
+      end
+
+    quote do
+      context = Strukt.Schema.context(__MODULE__)
+      Strukt.Schema.restore_context(__MODULE__, unquote(value).context)
+      unquote(declaration)
+      Strukt.Schema.restore_context(__MODULE__, context)
     end
   end
 
@@ -560,8 +585,10 @@ defmodule Strukt do
 
         cast(entity, params, @cast_fields)
         |> Map.put(:action, action)
-        |> __cast_embeds__(@cast_embed_fields)
-        |> __cast_polymorphic_embeds__(@cast_polymorphic_embed_fields)
+        |> __cast_embeds__(Strukt.Params.supplied_fields(params, @cast_embed_fields))
+        |> __cast_polymorphic_embeds__(
+          Strukt.Params.supplied_fields(params, @cast_polymorphic_embed_fields)
+        )
         |> validate()
       end
 
@@ -581,8 +608,10 @@ defmodule Strukt do
 
         cast(changeset, params, @cast_fields)
         |> Map.put(:action, action)
-        |> __cast_embeds__(@cast_embed_fields)
-        |> __cast_polymorphic_embeds__(@cast_polymorphic_embed_fields)
+        |> __cast_embeds__(Strukt.Params.supplied_fields(params, @cast_embed_fields))
+        |> __cast_polymorphic_embeds__(
+          Strukt.Params.supplied_fields(params, @cast_polymorphic_embed_fields)
+        )
         |> validate()
       end
 
@@ -606,18 +635,8 @@ defmodule Strukt do
               {:ok, []} when is_list(prev) ->
                 Ecto.Changeset.put_embed(changeset, field, [])
 
-              {:ok, %_{} = entity} when is_nil(prev) ->
-                # In this case, we don't have a previous instance, and we don't need to cast
-                Ecto.Changeset.put_embed(changeset, field, Map.from_struct(entity))
-
               {:ok, %_{} = entity} ->
-                # In this case, we have a previous instance, so we need to change appropriately, but we don't need to cast
-                cs = Ecto.Changeset.change(prev, Map.from_struct(entity))
-                Ecto.Changeset.put_embed(changeset, field, cs)
-
-              {:ok, [%_{} | _] = entities} ->
-                # When we have a list of entities, we are overwriting the embeds with a new set
-                Ecto.Changeset.put_embed(changeset, field, Enum.map(entities, &Map.from_struct/1))
+                Strukt.Params.put_embed_struct(changeset, field, entity)
 
               {:ok, _other} ->
                 # For all other parameters, we need to cast. Depending on how the embedded entity is configured, this may raise an error
@@ -633,9 +652,8 @@ defmodule Strukt do
       end
 
       @doc """
-      Applies the changes in the changset if the changeset is valid, returning the
-      updated data. The action must be one of `:insert`, `:update`, or `:delete` and
-      is used
+      Applies the changes if the changeset is valid, returning the updated data.
+      This function checks validity; it does not require or change the action.
 
       Returns `{:ok, t}` or `{:error, Ecto.Changeset.t}`, depending on validity of the changeset
       """
@@ -664,7 +682,7 @@ defmodule Strukt do
         defimpl Jason.Encoder, for: unquote(schema_module) do
           def encode(value, opts) do
             value
-            |> Ecto.embedded_dump(:json)
+            |> Strukt.JSON.dump()
             |> Jason.Encode.map(opts)
           end
         end

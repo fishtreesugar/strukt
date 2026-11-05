@@ -151,13 +151,13 @@ defmodule Strukt.Typespec do
   defp type_to_type_name(:binary), do: primitive(:binary)
   defp type_to_type_name(:uuid), do: compose_call(Ecto.UUID, :t, [])
 
-  defp type_to_type_name({:array, type}), do: [type_to_type_name(type)]
+  defp type_to_type_name({:array, type}), do: [nilable(type_to_type_name(type))]
 
   defp type_to_type_name(:map), do: primitive(:map)
 
   defp type_to_type_name({:map, type}) do
-    element_type = type_to_type_name(type)
-    map([{element_type, element_type}])
+    element_type = nilable(type_to_type_name(type))
+    map([{primitive(:optional, [primitive(:any)]), element_type}])
   end
 
   defp type_to_type_name(t) when t in [:utc_datetime_usec, :utc_datetime],

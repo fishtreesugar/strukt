@@ -12,12 +12,10 @@ This builds on top of Ecto embedded schemas, so the same familiar syntax you use
 to define schema'd types in Ecto, can now be used to define structs for general purpose
 usage.
 
-The functionality provided by the `defstruct` macro in this module is strictly a superset
-of the functionality provided both by `Kernel.defstruct/1`, as well as `Ecto.Schema`. If
-you import it in a scope where you use `Kernel.defstruct/1` already, it will not interfere.
-Likewise, the support for defining validation rules inline with usage of `field/3`, `embeds_one/3`,
-etc., is strictly additive, and those additions are stripped from the AST before `field/3`
-and friends ever see it.
+`defstruct` accepts ordinary `Kernel.defstruct/1` field lists and schema blocks containing
+`field`, `embeds_one`, `embeds_many`, polymorphic embeds, and `timestamps` declarations.
+Database associations such as `belongs_to` and `has_many` are not supported.
+Inline validation options are separated from the options passed to Ecto after evaluation.
 
 ## Installation
 
@@ -42,7 +40,7 @@ defmodule Person do
 
   @derives [Jason.Encoder]
   @primary_key {:uuid, Ecto.UUID, autogenerate: true}
-  @timestamps_opts [autogenerate: {NaiveDateTime, :utc_now, []}]
+  @timestamps_opts [type: :naive_datetime_usec, autogenerate: {NaiveDateTime, :utc_now, []}]
 
   defstruct do
     field :name, :string, required: true
@@ -74,12 +72,13 @@ iex> {:error, %Ecto.Changeset{valid?: false, errors: errors}} = Person.new(email
 
 # Validation (Update)
 iex> {:ok, person} = Person.new(name: "Paul", email: "bitwalker@example.com")
-...> {:error, %Ecto.Changeset{valid?: false, errors: errors}} = Person.change(person, email: "foo")
+...> %Ecto.Changeset{valid?: false, errors: errors} = Person.change(person, email: "foo")
 ...> errors
 [email: {"has invalid format", [validation: :format]}]
 
 # JSON Serialization/Deserialization
-...> person == person |> Jason.encode!() |> Person.from_json()
+iex> {:ok, loaded} = person |> Jason.encode!() |> Person.from_json()
+iex> loaded == person
 true
 ```
 
@@ -208,7 +207,7 @@ defmodule Person do
 
   @derives [Jason.Encoder]
   @primary_key {:uuid, Ecto.UUID, autogenerate: true}
-  @timestamps_opts [autogenerate: {NaiveDateTime, :utc_now, []}]
+  @timestamps_opts [type: :naive_datetime_usec, autogenerate: {NaiveDateTime, :utc_now, []}]
 
   defstruct do
     field :name, :string, required: true, source: :NAME
