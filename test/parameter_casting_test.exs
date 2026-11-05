@@ -169,4 +169,69 @@ defmodule Strukt.ParameterCastingTest do
       end
     end
   end
+
+  defp populated_child(name), do: %Child{uuid: Ecto.UUID.generate(), name: name}
+
+  test "trusted structs persist changed fields when updating an existing ordinary list" do
+    old = populated_child("old")
+    updated = %{old | name: "new"}
+    cs = Parent.changeset(struct(Parent, children: [old]), %{children: [updated]})
+    assert cs.valid?
+    assert Ecto.Changeset.apply_changes(cs).children == [updated]
+  end
+
+  test "mixed lists persist changed trusted structs when map entries are unchanged" do
+    old = populated_child("old")
+    other = populated_child("other")
+    updated = %{old | name: "new"}
+
+    cs =
+      Parent.changeset(struct(Parent, children: [old, other]), %{
+        children: [updated, %{uuid: other.uuid}]
+      })
+
+    assert cs.valid?
+    assert Ecto.Changeset.apply_changes(cs).children == [updated, other]
+  end
+
+  test "parent-field polymorphic switches select the new module before normalization" do
+    {:ok, p} =
+      Strukt.Test.ParameterCasting.ParentType.new(
+        kind: "email",
+        payload: %{address: "old@example.com"}
+      )
+
+    cs =
+      Strukt.Test.ParameterCasting.ParentType.change(p, kind: "sms", payload: %{number: "+123"})
+
+    assert cs.valid?
+
+    assert %Strukt.Test.ParameterCasting.SMS{number: "+123"} =
+             Ecto.Changeset.apply_changes(cs).payload
+  end
+
+  for field <- [:child, :poly, :children, :polys] do
+    test "omitting #{field} does not restore a deleted change from historical params" do
+      field = unquote(field)
+      many? = field in [:children, :polys]
+      original = populated_child("original")
+      value = if many?, do: [original], else: original
+      p = struct(Parent, [{field, value}])
+      attrs = %{uuid: original.uuid, name: "submitted", __type__: :child}
+      pending = Parent.change(p, %{field => if(many?, do: [attrs], else: attrs)})
+      cancelled = Ecto.Changeset.delete_change(pending, field)
+      cs = Parent.change(cancelled, title: "unrelated")
+      assert cs.valid?
+      assert Map.fetch!(Ecto.Changeset.apply_changes(cs), field) == value
+    end
+  end
+
+  test "ordinary single embeds reject structs outside their declared schema" do
+    cs =
+      Parent.changeset(struct(Parent), %{
+        child: struct(Strukt.Test.ParameterCasting.Foreign, name: 123)
+      })
+
+    refute cs.valid?
+  end
 end

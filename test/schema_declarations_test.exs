@@ -199,4 +199,108 @@ defmodule Strukt.SchemaDeclarationsTest do
       assert call(module, :__schema__, [:primary_key]) == expected
     end
   end
+
+  test "primary key flags are evaluated at their field declaration" do
+    compile(Strukt.Test.SchemaDeclarations.ReassignedKey, """
+    defstruct do
+      @key? false
+      field :name, :string
+      @key? true
+      field :key, :integer, primary_key: @key?
+    end
+    """)
+
+    assert call(Strukt.Test.SchemaDeclarations.ReassignedKey, :__schema__, [:primary_key]) == [
+             :key
+           ]
+  end
+
+  test "primary key constants after a validator are available before fields" do
+    compile(Strukt.Test.SchemaDeclarations.ValidatorKey, """
+    defstruct do
+      validation :pass
+      @key? true
+      field :key, :integer, primary_key: @key?
+    end
+    defp pass(cs,_), do: cs
+    """)
+
+    assert call(Strukt.Test.SchemaDeclarations.ValidatorKey, :__schema__, [:primary_key]) == [
+             :key
+           ]
+  end
+
+  test "binary_id primary keys autogenerate on direct construction" do
+    compile(Strukt.Test.SchemaDeclarations.DirectID, """
+    @primary_key {:id, :binary_id, autogenerate: true}
+    defstruct do
+      field :name, :string
+    end
+    """)
+
+    assert {:ok, %{id: id}} = call(Strukt.Test.SchemaDeclarations.DirectID, :new, [])
+    assert is_binary(id)
+    assert {:ok, ^id} = Ecto.UUID.cast(id)
+  end
+
+  test "binary_id primary keys autogenerate inside ordinary embeds" do
+    compile(Strukt.Test.SchemaDeclarations.NestedID, """
+    @primary_key {:id, :binary_id, autogenerate: true}
+    defstruct do
+      field :name, :string
+    end
+    """)
+
+    compile(Strukt.Test.SchemaDeclarations.IDContainer, """
+    defstruct do
+      embeds_one :child, Strukt.Test.SchemaDeclarations.NestedID, on_replace: :delete
+    end
+    """)
+
+    assert {:ok, %{child: %{id: id}}} =
+             call(Strukt.Test.SchemaDeclarations.IDContainer, :new, [[child: %{}]])
+
+    assert is_binary(id)
+  end
+
+  test "type declarations do not delay constants needed by following fields" do
+    compile(Strukt.Test.SchemaDeclarations.TypeConstant, """
+    defstruct do
+      @type value :: String.t()
+      @allowed ["a"]
+      field :name, :string, one_of: @allowed
+    end
+    """)
+
+    assert {:ok, _} = call(Strukt.Test.SchemaDeclarations.TypeConstant, :new, [[name: "a"]])
+  end
+
+  test "generated collection types include the nil values accepted by casting" do
+    [{_, beam}] =
+      compile(Strukt.Test.SchemaDeclarations.Nullable, """
+      defstruct do
+        field :values, {:map, :integer}, required: true
+        field :items, {:array, :integer}, required: true
+      end
+      """)
+
+    assert {:ok, _} =
+             call(Strukt.Test.SchemaDeclarations.Nullable, :new, [
+               [values: %{"x" => nil}, items: [1, nil]]
+             ])
+
+    {:ok, [{:type, {:t, {:type, _, :map, fields}, []}}]} = Code.Typespec.fetch_types(beam)
+
+    types =
+      Map.new(fields, fn {:type, _, :map_field_exact, [{:atom, _, key}, type]} -> {key, type} end)
+
+    {:type, _, :map, [{:type, _, _, [_, map_value]}]} = types.values
+    {:type, _, :list, [array_item]} = types.items
+    assert nilable?(map_value)
+    assert nilable?(array_item)
+  end
+
+  defp nilable?({:atom, _, nil}), do: true
+  defp nilable?({:type, _, :union, types}), do: Enum.any?(types, &nilable?/1)
+  defp nilable?(_), do: false
 end

@@ -21,6 +21,7 @@ defmodule Strukt.Test.ParameterCasting.Parent do
   use Strukt
 
   defstruct do
+    field(:title, :string)
     embeds_one(:child, Strukt.Test.ParameterCasting.Child, on_replace: :update)
     embeds_many(:children, Strukt.Test.ParameterCasting.Child, on_replace: :delete)
 
@@ -54,5 +55,39 @@ defmodule Strukt.Test.ParameterCasting.Collision do
   defstruct do
     field(:a, :string, source: :b)
     field(:b, :string, source: :c)
+  end
+end
+
+defmodule Strukt.Test.ParameterCasting.Foreign do
+  defstruct [:name]
+end
+
+defmodule Strukt.Test.ParameterCasting.Email do
+  use Strukt
+  @primary_key false
+  defstruct do
+    field(:address, :string, required: true)
+  end
+end
+
+defmodule Strukt.Test.ParameterCasting.SMS do
+  use Strukt
+  @primary_key false
+  defstruct do
+    field(:number, :string, required: true)
+  end
+end
+
+defmodule Strukt.Test.ParameterCasting.ParentType do
+  use Strukt
+
+  defstruct do
+    field(:kind, :string)
+
+    polymorphic_embeds_one(:payload,
+      types: [email: Strukt.Test.ParameterCasting.Email, sms: Strukt.Test.ParameterCasting.SMS],
+      use_parent_field_for_type: :kind,
+      on_replace: :update
+    )
   end
 end
