@@ -26,6 +26,7 @@ defmodule Strukt.MixProject do
         extras: [
           "guides/usage.md",
           "guides/schemas.md",
+          "guides/polymorphic-embeds.md",
           "guides/json.md",
           {:"README.md", [title: "About"]},
           {:"LICENSE.md", [title: "License"]}
@@ -59,7 +60,7 @@ defmodule Strukt.MixProject do
       {:ecto, "~> 3.12"},
       {:polymorphic_embed, "~> 5.0"},
       {:jason, "~> 1.4"},
-      {:ex_doc, "> 0.0.0", only: [:docs], runtime: false}
+      {:ex_doc, "~> 0.40.4", only: [:docs], runtime: false}
     ]
   end
 
