@@ -314,4 +314,116 @@ defmodule Strukt.ParameterCastingTest do
     assert cs.valid?
     assert %SMS{number: "+456"} = Ecto.Changeset.apply_changes(cs).payload
   end
+
+  defp compile(name, body) do
+    Code.compile_string(
+      "defmodule #{name} do\n@compile {:debug_info, true}\nuse Strukt\n#{body}\nend"
+    )
+  end
+
+  defp call(module, function, args), do: apply(module, function, args)
+  defp params_for(field, attrs) when field in [:many, :binary_many], do: %{field => [attrs]}
+  defp params_for(field, attrs), do: %{field => attrs}
+  defp expect_unknown(:raise, run), do: assert_raise(RuntimeError, run)
+  defp expect_unknown(:nilify, run), do: assert(Ecto.Changeset.apply_changes(run.()).item == nil)
+  defp expect_unknown(:changeset_error, run), do: refute(run.().valid?)
+
+  test "custom primary key types can be used in polymorphic embeds" do
+    assert {:ok, %{custom: %{id: id}}} =
+             Strukt.Test.SchemaOptions.Parent.new(custom: %{__type__: :child})
+
+    assert is_binary(id)
+  end
+
+  for field <- [:one, :many] do
+    test "a map type discriminator in #{field} returns a field error" do
+      field = unquote(field)
+      attrs = %{__type__: %{bad: "tag"}}
+      assert {:error, cs} = Strukt.Test.SchemaOptions.Parent.new(params_for(field, attrs))
+      assert Keyword.has_key?(cs.errors, field)
+    end
+  end
+
+  test "an unknown parent discriminator returns a field error" do
+    assert {:error, cs} =
+             Strukt.Test.SchemaOptions.Parent.new(kind: "unknown", parent_kind: %{name: "x"})
+
+    assert Keyword.has_key?(cs.errors, :parent_kind)
+  end
+
+  for policy <- [:changeset_error, :nilify, :raise] do
+    test "unknown explicit tags honor #{policy} with an existing variant" do
+      policy = unquote(policy)
+      m = Module.concat(Strukt.Test.SchemaOptions, "Policy#{policy}")
+
+      compile(m, """
+      defstruct do
+        polymorphic_embeds_one :item, types: [child: Strukt.Test.SchemaOptions.Child], on_replace: :update, on_type_not_found: #{inspect(policy)}
+      end
+      """)
+
+      p =
+        struct(m, item: %Strukt.Test.SchemaOptions.Child{uuid: Ecto.UUID.generate(), name: "old"})
+
+      run = fn -> call(m, :change, [p, [item: %{__type__: :unknown, name: "new"}]]) end
+      expect_unknown(policy, run)
+    end
+  end
+
+  for field <- [:binary_one, :binary_many] do
+    test "explicit nil binary IDs override autogeneration in #{field}" do
+      field = unquote(field)
+      attrs = %{__type__: :child, id: nil}
+      assert {:ok, p} = Strukt.Test.SchemaOptions.Parent.new(params_for(field, attrs))
+      child = Map.fetch!(p, field) |> List.wrap() |> hd()
+      assert child.id == nil
+    end
+  end
+
+  test "explicit nil UUID on a polymorphic update does not raise" do
+    assert {:ok, p} = Strukt.Test.SchemaOptions.Parent.new(one: %{__type__: :child, name: "old"})
+    cs = Strukt.Test.SchemaOptions.Parent.change(p, one: %{uuid: nil})
+    assert cs.valid?
+    assert Ecto.Changeset.apply_changes(cs).one.uuid == nil
+  end
+
+  test "a no-key ordinary list retains omitted fields during a positional update" do
+    c = %Strukt.Test.SchemaOptions.NoKey{name: "old", note: "saved"}
+
+    cs =
+      Strukt.Test.SchemaOptions.Parent.change(%Strukt.Test.SchemaOptions.Parent{no_keys: [c]},
+        no_keys: [%{name: "new"}]
+      )
+
+    assert cs.valid?
+    assert Ecto.Changeset.apply_changes(cs).no_keys == [%{c | name: "new"}]
+  end
+
+  for kind <- [:embeds_one, :polymorphic_embeds_one] do
+    test "insert-only child validation runs through #{kind} construction" do
+      child = Module.concat(Strukt.Test.SchemaOptions, "ActionChild#{unquote(kind)}")
+      parent = Module.concat(Strukt.Test.SchemaOptions, "ActionParent#{unquote(kind)}")
+
+      compile(child, """
+      defstruct do
+        field :name, :string
+      end
+      validation :reject when changeset.action == :insert
+      defp reject(cs, _), do: add_error(cs, :name, "rejected")
+      """)
+
+      declaration =
+        case unquote(kind) do
+          :embeds_one ->
+            "embeds_one :child, #{inspect(child)}, on_replace: :update"
+
+          :polymorphic_embeds_one ->
+            "polymorphic_embeds_one :child, types: [child: #{inspect(child)}], on_replace: :update"
+        end
+
+      compile(parent, "defstruct do\n#{declaration}\nend")
+      assert {:error, _} = call(child, :new, [[name: "x"]])
+      assert {:error, _} = call(parent, :new, [[child: %{__type__: :child, name: "x"}]])
+    end
+  end
 end

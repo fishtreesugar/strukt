@@ -375,4 +375,135 @@ defmodule Strukt.SchemaDeclarationsTest do
   defp nilable?({:atom, _, nil}), do: true
   defp nilable?({:type, _, :union, types}), do: Enum.any?(types, &nilable?/1)
   defp nilable?(_), do: false
+
+  test "schema redaction is captured at each field declaration" do
+    m = Strukt.Test.SchemaOptions.Redaction
+
+    compile(m, """
+    defstruct do
+      @schema_redact :all_except_primary_keys
+      field :secret, :string
+      @schema_redact false
+      field :public, :string
+    end
+    """)
+
+    assert call(m, :__schema__, [:redact_fields]) == [:secret]
+    refute inspect(struct(m, secret: "example-secret")) =~ "example-secret"
+  end
+
+  for type <- [Strukt.Test.SchemaOptions.CustomID, Strukt.Test.SchemaOptions.ParamID] do
+    test "#{inspect(type)} invokes its primary key generator" do
+      m = Module.concat(unquote(type), :Schema)
+
+      compile(
+        m,
+        "@primary_key {:id, #{inspect(unquote(type))}, autogenerate: true}\ndefstruct do\nfield :name, :string\nend"
+      )
+
+      assert {:ok, %{id: id}} = call(m, :new, [])
+      assert is_binary(id)
+    end
+  end
+
+  test "a grouped timestamp generator runs once and shares its result" do
+    m = Strukt.Test.SchemaOptions.Timestamps
+
+    compile(m, """
+    @timestamps_opts [type: :utc_datetime, autogenerate: {Strukt.Test.SchemaOptions.Counter, :next, []}]
+    defstruct do
+      field :name, :string
+      timestamps()
+    end
+    """)
+
+    Process.put(Strukt.Test.SchemaOptions.Counter, 0)
+    assert {:ok, t} = call(m, :new, [])
+    assert t.inserted_at == t.updated_at
+    assert Process.get(Strukt.Test.SchemaOptions.Counter) == 1
+  end
+
+  test "alias rebinding only affects following fields" do
+    m = Strukt.Test.SchemaOptions.Aliases
+
+    compile(m, """
+    defstruct do
+      alias Strukt.Test.SchemaOptions.Child, as: Item
+      embeds_one :first, Item
+      alias Strukt.Test.SchemaOptions.NoKey, as: Item
+      embeds_one :second, Item
+    end
+    """)
+
+    assert call(m, :__schema__, [:embed, :first]).related == Strukt.Test.SchemaOptions.Child
+  end
+
+  test "constants following a function are available to subsequent fields" do
+    m = Strukt.Test.SchemaOptions.FunctionOrder
+
+    compile(m, """
+    defstruct do
+      def helper, do: :ok
+      @allowed ["a"]
+      field :name, :string, one_of: @allowed
+    end
+    """)
+
+    assert {:ok, _} = call(m, :new, [[name: "a"]])
+  end
+
+  test "schema attributes can use preceding constants between fields" do
+    m = Strukt.Test.SchemaOptions.SchemaAttr
+
+    compile(m, """
+    defstruct do
+      field :name, :string
+      @precision :utc_datetime_usec
+      @timestamps_opts [type: @precision]
+      timestamps()
+    end
+    """)
+
+    assert call(m, :__schema__, [:type, :inserted_at]) == :utc_datetime_usec
+  end
+
+  test "validation guards capture attributes at the validation declaration" do
+    m = Strukt.Test.SchemaOptions.Guard
+
+    compile(m, """
+    @enabled true
+    validation :reject when @enabled
+    @enabled false
+    defstruct do
+      field :name, :string
+    end
+    defp reject(cs, _), do: add_error(cs, :name, "rejected")
+    """)
+
+    assert {:error, _} = call(m, :new, [[name: "a"]])
+  end
+
+  for {kind, declaration} <- [
+        {:field, "@opts [default: \"a\", required: true]\nfield :name, :string, @opts"},
+        {:embed,
+         "@opts [on_replace: :update]\nembeds_one :child, Strukt.Test.SchemaOptions.Child, @opts"}
+      ] do
+    test "#{kind} options may be supplied by a module attribute" do
+      m = Module.concat(Strukt.Test.SchemaOptions, "Options#{unquote(kind)}")
+      compile(m, "defstruct do\n#{unquote(declaration)}\nend")
+      assert {:ok, _} = call(m, :new, [])
+    end
+  end
+
+  test "field without an explicit type defaults to string" do
+    m = Strukt.Test.SchemaOptions.DefaultType
+    compile(m, "defstruct do\nfield :name\nend")
+    assert {:ok, %{name: "a"}} = call(m, :new, [[name: "a"]])
+  end
+
+  test "an attribute-only schema can disable its primary key" do
+    m = Strukt.Test.SchemaOptions.AttributeOnly
+    compile(m, "defstruct do\n@primary_key false\nend")
+    assert call(m, :__schema__, [:primary_key]) == []
+  end
 end
