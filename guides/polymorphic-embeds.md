@@ -138,6 +138,40 @@ matches. An explicit nil, invalid, incomplete, or unmatched key never borrows da
 position. For schemas without primary keys, supply complete values when reordering entries.
 Omitting the entire field keeps the existing list.
 
+### Select a Single Embed's Type from Its Parent
+
+Set `use_parent_field_for_type:` to select a single embed's variant from another field
+on the parent. The parent field's cast value is used, including an `Ecto.Enum` value and
+pending changes. `new/1` and `change/2` normalize source aliases using that selected variant.
+
+```elixir
+defmodule ParentSelectedReminder do
+  use Strukt
+
+  defstruct do
+    field :kind, Ecto.Enum, values: [:email, :sms]
+    polymorphic_embeds_one :channel,
+      types: [email: EmailChannel, sms: SMSChannel],
+      use_parent_field_for_type: :kind,
+      on_replace: :update
+  end
+end
+
+{:ok, selected} =
+  ParentSelectedReminder.new(kind: "email", channel: %{emailAddress: "person@example.com"})
+
+{:ok, switched} =
+  selected
+  |> ParentSelectedReminder.change(kind: "sms", channel: %{number: "+15555550103"})
+  |> ParentSelectedReminder.from_changeset()
+
+%SMSChannel{number: "+15555550103"} = switched.channel
+```
+
+When changing the parent discriminator, supply the embed parameters too: omitting the embed
+preserves its current value. A child type tag is optional with this configuration; if supplied,
+it must agree with the parent discriminator or `polymorphic_embed` raises.
+
 ### Already Constructed Structs
 
 Declared variant structs can be passed directly, and lists can mix them with parameter maps.

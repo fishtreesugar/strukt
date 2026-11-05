@@ -220,9 +220,39 @@ defmodule Strukt.ParameterCastingTest do
       attrs = %{uuid: original.uuid, name: "submitted", __type__: :child}
       pending = Parent.change(p, %{field => if(many?, do: [attrs], else: attrs)})
       cancelled = Ecto.Changeset.delete_change(pending, field)
-      cs = Parent.change(cancelled, title: "unrelated")
-      assert cs.valid?
-      assert Map.fetch!(Ecto.Changeset.apply_changes(cs), field) == value
+
+      for api <- [:change, :changeset] do
+        update = fn changeset ->
+          if api == :change,
+            do: Parent.change(changeset, title: "unrelated"),
+            else: Parent.changeset(changeset, %{title: "unrelated"}, :update)
+        end
+
+        cs = update.(cancelled)
+        assert cs.valid?
+        assert Map.fetch!(Ecto.Changeset.apply_changes(cs), field) == value
+
+        edited = %{original | name: "manually edited"}
+        edited = if many?, do: [edited], else: edited
+
+        manual =
+          if field in [:child, :children] do
+            child_change = Ecto.Changeset.change(original, name: "manually edited")
+
+            Ecto.Changeset.put_embed(
+              pending,
+              field,
+              if(many?, do: [child_change], else: child_change)
+            )
+          else
+            Ecto.Changeset.put_change(pending, field, edited)
+          end
+
+        assert Map.fetch!(Ecto.Changeset.apply_changes(manual), field) == edited
+        cs = update.(manual)
+        assert cs.valid?
+        assert Map.fetch!(Ecto.Changeset.apply_changes(cs), field) == edited
+      end
     end
   end
 
@@ -233,5 +263,55 @@ defmodule Strukt.ParameterCastingTest do
       })
 
     refute cs.valid?
+  end
+
+  test "ordinary embeds reject foreign structs during normalized creation and updates" do
+    foreign = struct(Strukt.Test.ParameterCasting.Foreign, name: "looks valid")
+
+    for field <- [:child, :children] do
+      params = %{field => if(field == :child, do: foreign, else: [foreign])}
+      assert {:error, cs} = Parent.new(params)
+      assert Keyword.has_key?(cs.errors, field)
+
+      for api <- [:change, :changeset] do
+        cs = apply(Parent, api, [%Parent{child: populated_child("old")}, params])
+        refute cs.valid?
+        assert Keyword.has_key?(cs.errors, field)
+      end
+    end
+  end
+
+  test "trusted ordinary structs can revert pending fields and reorder existing list entries" do
+    a = populated_child("A")
+    b = populated_child("B")
+    parent = %Parent{child: a, children: [a, b]}
+
+    pending =
+      Parent.change(parent,
+        child: %{name: "pending"},
+        children: [%{uuid: a.uuid, name: "pending"}, %{uuid: b.uuid}]
+      )
+
+    cs = Parent.changeset(pending, %{child: a, children: [b, a]}, :update)
+    assert cs.valid?
+    assert %{child: ^a, children: [^b, ^a]} = Ecto.Changeset.apply_changes(cs)
+  end
+
+  test "parent type selection uses source aliases and cast enum values including pending changes" do
+    alias Strukt.Test.ParameterCasting.{ParentEnumType, Email, SMS}
+
+    assert {:ok, parent} =
+             ParentEnumType.new(%{"TYPE" => "email", "payload" => %{"ADDRESS" => "old"}})
+
+    assert %Email{address: "old"} = parent.payload
+
+    pending = ParentEnumType.change(parent, %{TYPE: "sms"})
+    cs = ParentEnumType.change(pending, payload: %{"NUMBER" => "+123"})
+    assert cs.valid?
+    assert %{kind: :sms, payload: %SMS{number: "+123"}} = Ecto.Changeset.apply_changes(cs)
+
+    cs = ParentEnumType.change(cs, payload: %{"NUMBER" => "+456"})
+    assert cs.valid?
+    assert %SMS{number: "+456"} = Ecto.Changeset.apply_changes(cs).payload
   end
 end

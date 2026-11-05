@@ -37,6 +37,9 @@ defmodule Strukt.Params do
   # Preserve explicit nil, including invalid nil elements inside embed lists.
   defp transform(_module, nil, _struct, cardinality: :one), do: nil
 
+  defp transform(module, %other{} = params, _struct, cardinality: :one) when module != other,
+    do: params
+
   defp transform(module, params, struct, cardinality: :one) do
     formed = transform(module, params, struct)
 
@@ -73,7 +76,7 @@ defmodule Strukt.Params do
 
       case value do
         {:ok, value} ->
-          {field, value} = map_value_to_field(module, field, value, struct)
+          {field, value} = map_value_to_field(module, field, value, struct, params)
           Map.put(acc, field, value)
 
         :error ->
@@ -82,7 +85,7 @@ defmodule Strukt.Params do
     end)
   end
 
-  defp map_value_to_field(module, field, value, struct) do
+  defp map_value_to_field(module, field, value, struct, params) do
     case module.__schema__(:type, field) do
       # since ecto 3.12.0, parameterized type represent as a tuple instead of a triple
       # see https://github.com/elixir-ecto/ecto/commit/21c6068
@@ -97,9 +100,33 @@ defmodule Strukt.Params do
            cardinality: cardinality
          )}
 
-      {:parameterized, {PolymorphicEmbed, _opts}} ->
+      {:parameterized, {PolymorphicEmbed, opts}} ->
+        context =
+          if parent_field = opts.use_parent_field_for_type do
+            type =
+              case fetch_field_param(module, params, parent_field, :source) do
+                {:ok, value} ->
+                  struct
+                  |> Ecto.Changeset.cast(%{parent_field => value}, [parent_field])
+                  |> Ecto.Changeset.get_field(parent_field)
+
+                :error ->
+                  Map.get(struct, parent_field)
+              end
+
+            [parent_type: type]
+          else
+            []
+          end
+
         {field,
-         transform_polymorphic(module, field, value, get_struct_field_value(struct, field))}
+         transform_polymorphic(
+           module,
+           field,
+           value,
+           get_struct_field_value(struct, field),
+           context
+         )}
 
       {:array, {:parameterized, {PolymorphicEmbed, _opts}}} ->
         {field,
@@ -152,10 +179,18 @@ defmodule Strukt.Params do
 
   # Normalize maps using their inferred variant, or the current single embed for partial updates.
   # Without either context, leave type-not-found handling to PolymorphicEmbed.
-  defp transform_polymorphic(module, field, params, struct, _opts) when is_map(params) do
-    inferred = PolymorphicEmbed.get_polymorphic_module(module, field, params)
+  defp transform_polymorphic(module, field, params, struct, opts) when is_map(params) do
+    inferred =
+      case Keyword.fetch(opts, :parent_type) do
+        {:ok, nil} -> nil
+        {:ok, type} -> PolymorphicEmbed.get_polymorphic_module(module, field, to_string(type))
+        :error -> PolymorphicEmbed.get_polymorphic_module(module, field, params)
+      end
+
     struct = embedded_data(struct)
-    current_module = if is_struct(struct), do: struct.__struct__
+
+    current_module =
+      if not Keyword.has_key?(opts, :parent_type) and is_struct(struct), do: struct.__struct__
 
     case inferred || current_module do
       nil ->
@@ -249,7 +284,10 @@ defmodule Strukt.Params do
             fn fresh, params, index ->
               case Enum.at(values, index) do
                 %_{} = entity ->
-                  Ecto.Changeset.change(entity)
+                  data =
+                    current_embed(fresh.__struct__, entity, List.wrap(current), index) || fresh
+
+                  Ecto.Changeset.change(data, Map.from_struct(entity))
 
                 _ when pending? ->
                   selected = current_embed(fresh.__struct__, params, List.wrap(current), index)
@@ -291,6 +329,29 @@ defmodule Strukt.Params do
   end
 
   defp keyword_params(params), do: params
+
+  @doc false
+  def put_embed_struct(changeset, field, entity) do
+    {:embed, relation} = changeset.types[field]
+
+    if relation.cardinality == :one and is_struct(entity, relation.related) do
+      data = Ecto.Changeset.get_field(changeset, field) || struct(relation.related)
+
+      Ecto.Changeset.put_embed(
+        changeset,
+        field,
+        Ecto.Changeset.change(data, Map.from_struct(entity))
+      )
+    else
+      type = if relation.cardinality == :one, do: :map, else: {:array, :map}
+      Ecto.Changeset.add_error(changeset, field, "is invalid", validation: :embed, type: type)
+    end
+  end
+
+  @doc false
+  def supplied_fields(params, fields) do
+    Enum.filter(fields, &(fetch_param(params, &1) != :error))
+  end
 
   defp cast_pending_embed(%module{}, params, current, update? \\ false) do
     same_identity? =

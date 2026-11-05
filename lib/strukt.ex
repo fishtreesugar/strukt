@@ -280,11 +280,6 @@ defmodule Strukt do
                  attr not in [
                    :doc,
                    :spec,
-                   :type,
-                   :typep,
-                   :opaque,
-                   :callback,
-                   :macrocallback,
                    :impl,
                    :deprecated
                  ] ->
@@ -314,47 +309,40 @@ defmodule Strukt do
         _ -> false
       end)
 
-    fields =
-      declarations
-      |> Enum.filter(fn {type, _, _} -> type in @field_types end)
-      |> Strukt.Field.parse()
-
-    # Constants before the first field must also be available to schema attributes.
-    # Later constants stay beside their fields so reassignments retain source order.
+    # Leading constants are also available to schema-level attributes.
     {constants, declarations} = Enum.split_while(declarations, &match?({:@, _, _}, &1))
 
-    # Get a list of fields valid for `cast/3`
-    cast_fields = for %{type: :field} = f <- fields, do: f.name
-
-    # Get a list of embeds valid for `cast_embed/3`
-    cast_embed_fields = for %{type: t} = f <- fields, t in [:embeds_one, :embeds_many], do: f.name
-
-    # Get a list of polymorphic embeds valid for `PolymorphicEmbed.cast_polymorphic_embed/3`
-    cast_polymorphic_embed_fields =
-      for %{type: t} = f <- fields, t in [:polymorphic_embeds_one, :polymorphic_embeds_many] do
-        f.name
-      end
-
-    # Evaluate field metadata at the same point as the Ecto declaration.
-    fields_ast =
-      Enum.map(declarations, fn
-        {:@, _, _} = attr ->
-          attr
-
-        {:validation, _, _} = validation ->
-          validation
-
-        declaration ->
+    # Snapshot each field in declaration order. Schema setup needs to know whether
+    # a field defines the primary key before Ecto starts building the schema.
+    # Reuse these values so attributes and option expressions are evaluated once.
+    {declarations, fields} =
+      Enum.map_reduce(declarations, [], fn
+        {type, _, _} = declaration, fields when type in @field_types ->
           [field] = Strukt.Field.parse([declaration])
-          schema_field_ast(field)
+          value = Macro.unique_var(:strukt_field, __MODULE__)
+          {prepare_field_ast(field, value), fields ++ [{field, value}]}
+
+        declaration, fields ->
+          {declaration, fields}
       end)
 
-    # Make sure the default primary key is defined and castable
+    cast_fields = for {%{type: :field}, value} <- fields, do: quote(do: unquote(value).name)
+
+    cast_embed_fields =
+      for {%{type: type}, value} <- fields,
+          type in [:embeds_one, :embeds_many],
+          do: quote(do: unquote(value).name)
+
+    cast_polymorphic_embed_fields =
+      for {%{type: type}, value} <- fields,
+          type in [:polymorphic_embeds_one, :polymorphic_embeds_many],
+          do: quote(do: unquote(value).name)
+
+    fields_ast = for {field, value} <- fields, do: schema_field_ast(field, value)
+
     primary_key_options =
-      for field <- fields,
-          field.type == :field,
-          Keyword.has_key?(field.options, :primary_key),
-          do: field.options[:primary_key]
+      for {%{type: :field}, value} <- fields,
+          do: quote(do: Keyword.get(unquote(value).options, :primary_key, false))
 
     quoted =
       quote location: :keep do
@@ -376,6 +364,7 @@ defmodule Strukt do
 
         Strukt.__register_validators__(__MODULE__)
 
+        @validated_fields %{}
         unquote_splicing(constants)
 
         # Ensure any schema attributes are set, starting with outer scope, then inner
@@ -385,6 +374,7 @@ defmodule Strukt do
 
         # Schema attributes defined in module body
         unquote_splicing(schema_attrs)
+        unquote_splicing(declarations)
 
         # Ensure a primary key is defined, if one hasn't been by this point
         defines_primary_key? = Enum.any?(unquote(primary_key_options), &(&1 == true))
@@ -404,20 +394,19 @@ defmodule Strukt do
         end
 
         @schema_name Macro.underscore(__MODULE__)
-        @validated_fields %{}
-        @cast_embed_fields unquote(Macro.escape(cast_embed_fields))
-        @cast_polymorphic_embed_fields unquote(Macro.escape(cast_polymorphic_embed_fields))
+        @cast_embed_fields unquote(cast_embed_fields)
+        @cast_polymorphic_embed_fields unquote(cast_polymorphic_embed_fields)
 
         # Ensure primary key can be cast, if applicable
         case Module.get_attribute(__MODULE__, :primary_key) do
           false ->
             # Primary key was explicitly disabled
-            Module.put_attribute(__MODULE__, :cast_fields, unquote(Macro.escape(cast_fields)))
+            Module.put_attribute(__MODULE__, :cast_fields, unquote(cast_fields))
 
           {pk, _type, _opts} ->
             # Primary key was defaulted, or set manually via attribute
             Module.put_attribute(__MODULE__, :cast_fields, [
-              pk | unquote(Macro.escape(cast_fields))
+              pk | unquote(cast_fields)
             ])
         end
 
@@ -534,7 +523,7 @@ defmodule Strukt do
     end
   end
 
-  defp schema_field_ast(field) do
+  defp prepare_field_ast(field, value) do
     child =
       if field.type in [:embeds_one, :embeds_many] and field.block != nil do
         quote do
@@ -546,33 +535,65 @@ defmodule Strukt do
 
     metadata =
       if field.type != :timestamps do
-        kvs =
-          Keyword.merge(
-            [
-              type: field.type,
-              value_type: field.value_type,
-              default: field.options[:default],
-              types: field.options[:types]
-            ],
-            field.validations
-          )
-
         quote do
           @validated_fields Map.put(
                               @validated_fields,
-                              unquote(field.name),
-                              unquote({:%{}, [], kvs})
+                              unquote(value).name,
+                              Map.merge(
+                                %{
+                                  type: unquote(field.type),
+                                  value_type: unquote(value).value_type,
+                                  default: unquote(value).options[:default],
+                                  types: unquote(value).options[:types]
+                                },
+                                Map.new(unquote(value).validations)
+                              )
                             )
         end
       end
 
-    {type, meta, args} = Strukt.Field.to_ast(field)
-
     quote do
       unquote(child)
+
+      unquote(value) = %{
+        name: unquote(field.name),
+        value_type: unquote(field.value_type),
+        options: unquote(field.options),
+        validations: unquote(field.validations)
+      }
+
       unquote(metadata)
-      unquote({type, meta, Enum.take(args, 3)})
     end
+  end
+
+  defp schema_field_ast(%{type: :timestamps} = field, value) do
+    args =
+      field.options
+      |> Enum.with_index()
+      |> Enum.map(fn {_, index} -> quote(do: Enum.at(unquote(value).options, unquote(index))) end)
+
+    {:timestamps, field.meta, args}
+  end
+
+  defp schema_field_ast(%{type: type} = field, value)
+       when type in [:polymorphic_embeds_one, :polymorphic_embeds_many] do
+    # PolymorphicEmbed's macros inspect the keyword keys at expansion time.
+    # Keep that shape, but read each value from the evaluated field options.
+    opts =
+      for {key, _} <- field.options do
+        {key, quote(do: Keyword.fetch!(unquote(value).options, unquote(key)))}
+      end
+
+    {type, field.meta, [quote(do: unquote(value).name), opts]}
+  end
+
+  defp schema_field_ast(field, value) do
+    {field.type, field.meta,
+     [
+       quote(do: unquote(value).name),
+       quote(do: unquote(value).value_type),
+       quote(do: unquote(value).options)
+     ]}
   end
 
   @doc false
@@ -633,8 +654,10 @@ defmodule Strukt do
 
         cast(entity, params, @cast_fields)
         |> Map.put(:action, action)
-        |> __cast_embeds__(@cast_embed_fields)
-        |> __cast_polymorphic_embeds__(@cast_polymorphic_embed_fields)
+        |> __cast_embeds__(Strukt.Params.supplied_fields(params, @cast_embed_fields))
+        |> __cast_polymorphic_embeds__(
+          Strukt.Params.supplied_fields(params, @cast_polymorphic_embed_fields)
+        )
         |> validate()
       end
 
@@ -654,8 +677,10 @@ defmodule Strukt do
 
         cast(changeset, params, @cast_fields)
         |> Map.put(:action, action)
-        |> __cast_embeds__(@cast_embed_fields)
-        |> __cast_polymorphic_embeds__(@cast_polymorphic_embed_fields)
+        |> __cast_embeds__(Strukt.Params.supplied_fields(params, @cast_embed_fields))
+        |> __cast_polymorphic_embeds__(
+          Strukt.Params.supplied_fields(params, @cast_polymorphic_embed_fields)
+        )
         |> validate()
       end
 
@@ -679,14 +704,8 @@ defmodule Strukt do
               {:ok, []} when is_list(prev) ->
                 Ecto.Changeset.put_embed(changeset, field, [])
 
-              {:ok, %_{} = entity} when is_nil(prev) ->
-                # In this case, we don't have a previous instance, and we don't need to cast
-                Ecto.Changeset.put_embed(changeset, field, Map.from_struct(entity))
-
               {:ok, %_{} = entity} ->
-                # In this case, we have a previous instance, so we need to change appropriately, but we don't need to cast
-                cs = Ecto.Changeset.change(prev, Map.from_struct(entity))
-                Ecto.Changeset.put_embed(changeset, field, cs)
+                Strukt.Params.put_embed_struct(changeset, field, entity)
 
               {:ok, _other} ->
                 # For all other parameters, we need to cast. Depending on how the embedded entity is configured, this may raise an error

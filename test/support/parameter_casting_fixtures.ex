@@ -66,7 +66,7 @@ defmodule Strukt.Test.ParameterCasting.Email do
   use Strukt
   @primary_key false
   defstruct do
-    field(:address, :string, required: true)
+    field(:address, :string, required: true, source: :ADDRESS)
   end
 end
 
@@ -74,7 +74,21 @@ defmodule Strukt.Test.ParameterCasting.SMS do
   use Strukt
   @primary_key false
   defstruct do
-    field(:number, :string, required: true)
+    field(:number, :string, required: true, source: :NUMBER)
+  end
+end
+
+defmodule Strukt.Test.ParameterCasting.ParentEnumType do
+  use Strukt
+
+  defstruct do
+    field(:kind, Ecto.Enum, values: [:email, :sms], source: :TYPE)
+
+    polymorphic_embeds_one(:payload,
+      types: [email: Strukt.Test.ParameterCasting.Email, sms: Strukt.Test.ParameterCasting.SMS],
+      use_parent_field_for_type: :kind,
+      on_replace: :update
+    )
   end
 end
 

@@ -1,5 +1,15 @@
 # 0.4.1
 
+- Persist trusted struct updates to existing ordinary embed lists and reject foreign structs
+  in ordinary single embeds.
+- Cast only newly supplied embed fields when updating a changeset, preserving deleted or
+  manually edited changes instead of replaying historical parameters.
+- Select the new polymorphic variant before normalization when using a parent discriminator,
+  including source aliases, enum values, and pending parent changes.
+- Autogenerate built-in `:binary_id` primary keys during construction, including nested embeds.
+- Evaluate field options once in declaration order, including primary-key flags; type
+  declarations no longer delay constants needed by following fields.
+- Include nullable array elements and typed-map values in generated types.
 - Preserve single ordinary embed IDs and pending fields during direct changeset updates
   with `on_replace: :update`, including updates that omit the primary key.
 - Normalize source aliases in tagless polymorphic updates using the current variant;

@@ -89,9 +89,10 @@ defmodule Strukt.SchemaDeclarationsTest do
         key == :counts
       end)
 
-    assert {:type, _, :map,
-            [{:type, _, :map_field_assoc, [{:type, _, :any, []}, {:type, _, :integer, []}]}]} =
+    assert {:type, _, :map, [{:type, _, :map_field_assoc, [{:type, _, :any, []}, value]}]} =
              map
+
+    assert {:type, _, :union, [{:type, _, :integer, []}, {:atom, _, nil}]} = value
   end
 
   test "validation declarations before defstruct are retained" do
@@ -273,6 +274,77 @@ defmodule Strukt.SchemaDeclarationsTest do
     """)
 
     assert {:ok, _} = call(Strukt.Test.SchemaDeclarations.TypeConstant, :new, [[name: "a"]])
+  end
+
+  test "field options and validation expressions are evaluated once at their declaration" do
+    compile(Strukt.Test.SchemaDeclarations.EvaluateOnce, """
+    defstruct do
+      @key? true
+      field :key, :integer, primary_key: (send(self(), :key_option); @key?)
+      field :name, :string,
+        default: (send(self(), :default_option); "a"),
+        one_of: (send(self(), :validation_option); ["a"])
+      @key? false
+      field :other, :string, primary_key: @key?
+    end
+    """)
+
+    module = Strukt.Test.SchemaDeclarations.EvaluateOnce
+    assert call(module, :__schema__, [:primary_key]) == [:key]
+    assert {:ok, %{name: "a"}} = call(module, :new, [])
+    assert {:error, _} = call(module, :new, [[name: "b"]])
+
+    for message <- [:key_option, :default_option, :validation_option] do
+      assert_received ^message
+      refute_received ^message
+    end
+  end
+
+  test "schema-level attributes retain leading constants when later fields redefine them" do
+    compile(Strukt.Test.SchemaDeclarations.SchemaConstant, """
+    defstruct do
+      @id_type :binary_id
+      @primary_key {:id, @id_type, autogenerate: true}
+      field :name, :string
+      @id_type :integer
+      field :count, @id_type
+    end
+    """)
+
+    module = Strukt.Test.SchemaDeclarations.SchemaConstant
+    assert call(module, :__schema__, [:type, :id]) == :binary_id
+    assert call(module, :__schema__, [:type, :count]) == :integer
+  end
+
+  test "binary_id generation preserves supplied IDs and existing nested IDs" do
+    compile(Strukt.Test.SchemaDeclarations.SourcedID, """
+    @primary_key {:id, :binary_id, autogenerate: true, source: :ID}
+    defstruct do
+      field :name, :string
+    end
+    """)
+
+    compile(Strukt.Test.SchemaDeclarations.IDList, """
+    defstruct do
+      embeds_many :children, Strukt.Test.SchemaDeclarations.SourcedID, on_replace: :delete
+    end
+    """)
+
+    module = Strukt.Test.SchemaDeclarations.SourcedID
+    id = Ecto.UUID.generate()
+    assert {:ok, %{id: ^id}} = call(module, :new, [[ID: id]])
+    assert {:ok, %{id: nil}} = call(module, :new, [[id: nil]])
+
+    assert {:ok, parent} = call(Strukt.Test.SchemaDeclarations.IDList, :new, [[children: [%{}]]])
+    [child] = parent.children
+    assert is_binary(child.id)
+
+    cs =
+      call(Strukt.Test.SchemaDeclarations.IDList, :change, [parent, [children: [%{name: "next"}]]])
+
+    assert cs.valid?
+    assert [%{id: existing_id, name: "next"}] = Ecto.Changeset.apply_changes(cs).children
+    assert existing_id == child.id
   end
 
   test "generated collection types include the nil values accepted by casting" do
