@@ -1,8 +1,4 @@
-# Unreleased
-
-- Added a polymorphic embeds guide with schema, update, validation, and JSON examples.
-
-- Updated ExDoc to 0.40.4 and refreshed its Markdown and syntax-highlighting dependencies.
+# 0.4.1
 
 - Fixed explicit `nil` updates for ordinary and polymorphic embeds: single embeds clear,
   and embed collections normalize `nil` to `[]`. List elements cannot be `nil`.
@@ -14,8 +10,11 @@
 - Fixed `required: false` incorrectly enabling required validation.
 - Fixed generated types: optional fields remain nullable regardless of their defaults,
   and keyword-form required declarations are recognized for fields and single embeds.
+- Added a polymorphic embeds guide with schema, update, validation, and JSON examples.
 - Documented parameter precedence, nil and empty-list behavior, and differences between
   `new`/`change`, direct changeset APIs, and JSON loading.
+- Updated ExDoc to 0.40.4 and refreshed its Markdown and syntax-highlighting dependencies.
+- Included guides in the Hex package and linked documentation source to the release tag.
 
 # 0.4.0
 

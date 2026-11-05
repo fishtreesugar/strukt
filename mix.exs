@@ -4,11 +4,12 @@ defmodule Strukt.MixProject do
   use Mix.Project
 
   @source_url "https://github.com/fishtreesugar/strukt"
+  @version "0.4.1"
 
   def project do
     [
       app: :strukt,
-      version: "0.4.0",
+      version: @version,
       elixir: "~> 1.17",
       description: description(),
       package: package(),
@@ -20,7 +21,7 @@ defmodule Strukt.MixProject do
       homepage_url: @source_url,
       docs: [
         main: "readme",
-        source_ref: "cdc-fixes",
+        source_ref: @version,
         api_reference: false,
         extra_section: "Extras",
         extras: [
@@ -71,7 +72,7 @@ defmodule Strukt.MixProject do
   defp package do
     [
       name: "strukt_fork",
-      files: ["lib", "mix.exs", "README.md", "CHANGELOG.md", "LICENSE.md"],
+      files: ["lib", "guides", "mix.exs", "README.md", "CHANGELOG.md", "LICENSE.md"],
       maintainers: ["fishtreesugar"],
       licenses: ["Apache-2.0"],
       links: %{
