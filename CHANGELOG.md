@@ -1,5 +1,17 @@
 # 0.4.1
 
+- Preserve single ordinary embed IDs and pending fields during direct changeset updates
+  with `on_replace: :update`, including updates that omit the primary key.
+- Normalize source aliases in tagless polymorphic updates using the current variant;
+  schema struct inputs always use field names, even when another field's source collides.
+- Handle indexed-map embed collections with the same normalization and identity matching
+  as lists. Mixed ordinary struct/map lists cast correctly, and malformed nested lists
+  return field errors instead of raising.
+- Preserve validators declared before `defstruct`, support guards following validator
+  options, and evaluate schema constants alongside their field declarations.
+- Fix keyword-form range validation, empty inclusion/exclusion/subset sets, and generated
+  typed-map specifications. `primary_key: false` on a field no longer disables the schema key.
+- Correct the README's changeset return values and timestamp precision in JSON round-trips.
 - Fixed polymorphic embeds restoring stale data after clearing or switching types within
   one changeset, including stale values satisfying required validation.
 - Match embed list updates by supplied primary keys before falling back to position,

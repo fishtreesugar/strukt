@@ -112,6 +112,11 @@ changes. If no primary key is supplied, the entry at the same position supplies 
 An explicit nil, invalid, incomplete, or unmatched key never falls back to another entry's
 position. Changing a polymorphic entry's type starts with the new type's defaults instead.
 
+Embed collections also accept indexed maps such as `%{"0" => params, "1" => params}`.
+Numeric keys are sorted numerically, so `"2"` precedes `"10"`. The entries follow the same
+source-name normalization, autogeneration, and identity matching as list entries; an empty
+map clears the collection. Malformed entries return a field error.
+
 ### Parameter Names and Changeset APIs
 
 `new/1` and `change/2` map both the schema field name and its `source:` name, including in
@@ -123,6 +128,11 @@ The lower-level `changeset/2` and `changeset/3` APIs accept maps or keyword list
 struct of the same schema), but do not perform source-name normalization or autogeneration.
 Use schema field names at every nesting level with these APIs. They apply the same field-level
 nil/empty-list rules and validations as `change/2`.
+
+For an ordinary single embed with `on_replace: :update`, direct changeset updates can omit
+the primary key and still preserve existing and pending fields. Ordinary embed lists may
+mix declared structs and parameter maps in these direct APIs: structs are trusted as already
+validated, while maps run the child schema's changeset validations.
 
 `from_json/1` is a separate loading API, not a substitute for `new/1`. See the
 [JSON guide](json.md) for its validation and null-handling differences.

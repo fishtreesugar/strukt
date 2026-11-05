@@ -42,7 +42,7 @@ defmodule Person do
 
   @derives [Jason.Encoder]
   @primary_key {:uuid, Ecto.UUID, autogenerate: true}
-  @timestamps_opts [autogenerate: {NaiveDateTime, :utc_now, []}]
+  @timestamps_opts [type: :naive_datetime_usec, autogenerate: {NaiveDateTime, :utc_now, []}]
 
   defstruct do
     field :name, :string, required: true
@@ -74,12 +74,13 @@ iex> {:error, %Ecto.Changeset{valid?: false, errors: errors}} = Person.new(email
 
 # Validation (Update)
 iex> {:ok, person} = Person.new(name: "Paul", email: "bitwalker@example.com")
-...> {:error, %Ecto.Changeset{valid?: false, errors: errors}} = Person.change(person, email: "foo")
+...> %Ecto.Changeset{valid?: false, errors: errors} = Person.change(person, email: "foo")
 ...> errors
 [email: {"has invalid format", [validation: :format]}]
 
 # JSON Serialization/Deserialization
-...> person == person |> Jason.encode!() |> Person.from_json()
+iex> {:ok, loaded} = person |> Jason.encode!() |> Person.from_json()
+iex> loaded == person
 true
 ```
 
@@ -208,7 +209,7 @@ defmodule Person do
 
   @derives [Jason.Encoder]
   @primary_key {:uuid, Ecto.UUID, autogenerate: true}
-  @timestamps_opts [autogenerate: {NaiveDateTime, :utc_now, []}]
+  @timestamps_opts [type: :naive_datetime_usec, autogenerate: {NaiveDateTime, :utc_now, []}]
 
   defstruct do
     field :name, :string, required: true, source: :NAME

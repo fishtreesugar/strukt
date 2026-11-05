@@ -78,8 +78,16 @@ defmodule Strukt do
 
   defmacro __using__(_) do
     quote do
+      Strukt.__register_validators__(__MODULE__)
       import Kernel, except: [defstruct: 1, defstruct: 2, validation: 1, validation: 2]
       import unquote(__MODULE__), only: :macros
+    end
+  end
+
+  @doc false
+  def __register_validators__(module) do
+    unless Module.has_attribute?(module, :strukt_validators) do
+      Module.register_attribute(module, :strukt_validators, accumulate: true)
     end
   end
 
@@ -136,10 +144,18 @@ defmodule Strukt do
   """
   defmacro validation(validator, opts \\ [])
 
+  defmacro validation(validator, {:when, meta, [opts | guards]}) do
+    quote do
+      Strukt.validation(unquote({:when, meta, [validator | guards]}), unquote(opts))
+    end
+  end
+
   defmacro validation({:when, _meta, [validator | guards]}, opts) do
     validator = Macro.expand(validator, %{__CALLER__ | function: {:init, 1}})
 
     quote do
+      Strukt.__register_validators__(__MODULE__)
+
       @strukt_validators {unquote(validator), unquote(opts),
                           unquote(Macro.escape(guards, unquote: true))}
     end
@@ -149,6 +165,7 @@ defmodule Strukt do
     validator = Macro.expand(validator, %{__CALLER__ | function: {:init, 1}})
 
     quote do
+      Strukt.__register_validators__(__MODULE__)
       @strukt_validators {unquote(validator), unquote(opts), true}
     end
   end
@@ -226,11 +243,7 @@ defmodule Strukt do
         _ -> false
       end)
 
-    {fields, body} =
-      Enum.split_with(body, fn
-        {field_type, _, _} -> field_type in @field_types
-        _ -> false
-      end)
+    {declarations, body} = split_schema_declarations(body)
 
     {schema_attrs, special_attrs} =
       Enum.split_with(special_attrs, fn {:@, _, [{attr, _, _}]} -> attr in @schema_attrs end)
@@ -246,20 +259,54 @@ defmodule Strukt do
           []
       end
 
-    fields = Strukt.Field.parse(fields)
-
-    define_struct(env, name, meta, moduledoc, derives, schema_attrs, fields, body)
+    define_struct(env, name, meta, moduledoc, derives, schema_attrs, declarations, body)
   end
 
   # This clause handles the edge case where the definition only contains
   # a single field and nothing else
   defp define_struct(env, name, {type, _, _} = field) when is_supported(type) do
-    fields = Strukt.Field.parse([field])
-
-    define_struct(env, name, [], nil, [], [], fields, [])
+    define_struct(env, name, [], nil, [], [], [field], [])
   end
 
-  defp define_struct(_env, name, meta, moduledoc, derives, schema_attrs, fields, body) do
+  defp split_schema_declarations(nodes) do
+    {declarations, body, _} =
+      Enum.reduce(nodes, {[], [], false}, fn node, {declarations, body, body_started?} ->
+        case node do
+          {type, _, _} when type in @field_types ->
+            {[node | declarations], body, body_started?}
+
+          {:@, _, [{attr, _, _}]}
+          when not body_started? and
+                 attr not in [
+                   :doc,
+                   :spec,
+                   :type,
+                   :typep,
+                   :opaque,
+                   :callback,
+                   :macrocallback,
+                   :impl,
+                   :deprecated
+                 ] ->
+            {[node | declarations], body, false}
+
+          {:validation, _, _} when not body_started? ->
+            {[node | declarations], body, false}
+
+          {macro, _, _} when macro in [:use, :import, :alias] ->
+            {declarations, [node | body], body_started?}
+
+          _ ->
+            # Leave function annotations and subsequent attribute assignments beside
+            # their functions; moving them would change captured attribute values.
+            {declarations, [node | body], true}
+        end
+      end)
+
+    {Enum.reverse(declarations), Enum.reverse(body)}
+  end
+
+  defp define_struct(_env, name, meta, moduledoc, derives, schema_attrs, declarations, body) do
     # Extract macros which should be defined at the top of the module
     {macros, body} =
       Enum.split_with(body, fn
@@ -267,38 +314,14 @@ defmodule Strukt do
         _ -> false
       end)
 
-    # Extract child struct definitions
-    children =
-      fields
-      |> Enum.filter(fn %{type: t, block: block} ->
-        t in [:embeds_one, :embeds_many] and block != nil
-      end)
-      |> Enum.map(fn %{value_type: value_type, block: block} ->
-        quote do
-          Strukt.defstruct unquote(value_type) do
-            unquote(block)
-          end
-        end
-      end)
+    fields =
+      declarations
+      |> Enum.filter(fn {type, _, _} -> type in @field_types end)
+      |> Strukt.Field.parse()
 
-    # Generate validation metadata for the generated module
-    validated_fields =
-      for %{name: name, type: t} = f <- fields, t != :timestamps, reduce: {:%{}, [], []} do
-        {node, meta, elements} ->
-          kvs =
-            Keyword.merge(
-              [
-                type: t,
-                value_type: f.value_type,
-                default: f.options[:default],
-                types: f.options[:types]
-              ],
-              f.validations
-            )
-
-          element = {name, {:%{}, [], kvs}}
-          {node, meta, [element | elements]}
-      end
+    # Constants before the first field must also be available to schema attributes.
+    # Later constants stay beside their fields so reassignments retain source order.
+    {constants, declarations} = Enum.split_while(declarations, &match?({:@, _, _}, &1))
 
     # Get a list of fields valid for `cast/3`
     cast_fields = for %{type: :field} = f <- fields, do: f.name
@@ -312,16 +335,26 @@ defmodule Strukt do
         f.name
       end
 
-    # Expand fields back to their final AST form
+    # Evaluate field metadata at the same point as the Ecto declaration.
     fields_ast =
-      fields
-      |> Stream.map(&Strukt.Field.to_ast/1)
-      # Drop any extraneous args (such as inline schema definitions, which have been extracted)
-      |> Enum.map(fn {type, meta, args} -> {type, meta, Enum.take(args, 3)} end)
+      Enum.map(declarations, fn
+        {:@, _, _} = attr ->
+          attr
+
+        {:validation, _, _} = validation ->
+          validation
+
+        declaration ->
+          [field] = Strukt.Field.parse([declaration])
+          schema_field_ast(field)
+      end)
 
     # Make sure the default primary key is defined and castable
-    defines_primary_key? =
-      Enum.any?(fields, &(&1.type == :field and Keyword.has_key?(&1.options, :primary_key)))
+    primary_key_options =
+      for field <- fields,
+          field.type == :field,
+          Keyword.has_key?(field.options, :primary_key),
+          do: field.options[:primary_key]
 
     quoted =
       quote location: :keep do
@@ -341,10 +374,9 @@ defmodule Strukt do
         @behaviour unquote(__MODULE__)
         @before_compile unquote(__MODULE__)
 
-        Module.register_attribute(__MODULE__, :strukt_validators, accumulate: true)
+        Strukt.__register_validators__(__MODULE__)
 
-        # Generate child structs before generating the parent
-        unquote_splicing(children)
+        unquote_splicing(constants)
 
         # Ensure any schema attributes are set, starting with outer scope, then inner
         for {schema_attr, value} <- schema_attrs do
@@ -355,7 +387,7 @@ defmodule Strukt do
         unquote_splicing(schema_attrs)
 
         # Ensure a primary key is defined, if one hasn't been by this point
-        defines_primary_key? = unquote(defines_primary_key?)
+        defines_primary_key? = Enum.any?(unquote(primary_key_options), &(&1 == true))
 
         case Module.get_attribute(__MODULE__, :primary_key) do
           nil when not defines_primary_key? ->
@@ -372,7 +404,7 @@ defmodule Strukt do
         end
 
         @schema_name Macro.underscore(__MODULE__)
-        @validated_fields unquote(validated_fields)
+        @validated_fields %{}
         @cast_embed_fields unquote(Macro.escape(cast_embed_fields))
         @cast_polymorphic_embed_fields unquote(Macro.escape(cast_polymorphic_embed_fields))
 
@@ -502,6 +534,47 @@ defmodule Strukt do
     end
   end
 
+  defp schema_field_ast(field) do
+    child =
+      if field.type in [:embeds_one, :embeds_many] and field.block != nil do
+        quote do
+          Strukt.defstruct unquote(field.value_type) do
+            unquote(field.block)
+          end
+        end
+      end
+
+    metadata =
+      if field.type != :timestamps do
+        kvs =
+          Keyword.merge(
+            [
+              type: field.type,
+              value_type: field.value_type,
+              default: field.options[:default],
+              types: field.options[:types]
+            ],
+            field.validations
+          )
+
+        quote do
+          @validated_fields Map.put(
+                              @validated_fields,
+                              unquote(field.name),
+                              unquote({:%{}, [], kvs})
+                            )
+        end
+      end
+
+    {type, meta, args} = Strukt.Field.to_ast(field)
+
+    quote do
+      unquote(child)
+      unquote(metadata)
+      unquote({type, meta, Enum.take(args, 3)})
+    end
+  end
+
   @doc false
   defmacro __before_compile__(env) do
     schema_module = env.module
@@ -614,10 +687,6 @@ defmodule Strukt do
                 # In this case, we have a previous instance, so we need to change appropriately, but we don't need to cast
                 cs = Ecto.Changeset.change(prev, Map.from_struct(entity))
                 Ecto.Changeset.put_embed(changeset, field, cs)
-
-              {:ok, [%_{} | _] = entities} ->
-                # When we have a list of entities, we are overwriting the embeds with a new set
-                Ecto.Changeset.put_embed(changeset, field, Enum.map(entities, &Map.from_struct/1))
 
               {:ok, _other} ->
                 # For all other parameters, we need to cast. Depending on how the embedded entity is configured, this may raise an error

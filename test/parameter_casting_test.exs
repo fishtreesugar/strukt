@@ -55,4 +55,118 @@ defmodule Strukt.ParameterCastingTest do
       assert Keyword.has_key?(cs.errors, unquote(field))
     end
   end
+
+  test "single embed updates honor on_replace update while recreation starts fresh" do
+    child = %Child{uuid: Ecto.UUID.generate(), name: "old", note: "saved"}
+    pending = Parent.change(%Parent{child: child}, child: %{name: "pending"})
+
+    for id <- [Ecto.UUID.generate(), nil] do
+      cs = Parent.changeset(pending, %{child: %{uuid: id, note: "next"}}, :update)
+      assert cs.valid?
+
+      assert Ecto.Changeset.apply_changes(cs).child == %{
+               child
+               | uuid: id,
+                 name: "pending",
+                 note: "next"
+             }
+    end
+
+    recreated = pending |> Parent.change(child: nil) |> Parent.change(child: %{uuid: child.uuid})
+    assert recreated.valid?
+    assert %Child{name: nil, note: "default"} = Ecto.Changeset.apply_changes(recreated).child
+  end
+
+  test "tagless polymorphic updates normalize explicit nil aliases against pending data" do
+    child = %Child{uuid: Ecto.UUID.generate(), name: "old", note: "saved"}
+    pending = Parent.change(%Parent{poly: child}, poly: %{__type__: :child, note: "pending"})
+    cs = Parent.change(pending, poly: %{"NAME" => nil, "name" => "ignored"})
+    assert cs.valid?
+    assert Ecto.Changeset.apply_changes(cs).poly == %{child | name: nil, note: "pending"}
+
+    assert Ecto.Changeset.apply_changes(Parent.change(cs, poly: %{})) ==
+             Ecto.Changeset.apply_changes(cs)
+  end
+
+  test "nested schema structs use field names while parameter maps retain source precedence" do
+    alias Strukt.Test.ParameterCasting.CollisionParent
+    input = %Collision{a: "A", b: "B"}
+    assert {:ok, %{child: ^input}} = CollisionParent.new(child: input)
+    assert Ecto.Changeset.apply_changes(Collision.change(input, input)) == input
+
+    assert {:ok, %{a: "source A", b: "source B"}} =
+             Collision.new(%{a: "ignored", b: "source A", c: "source B"})
+  end
+
+  test "indexed lists sort numeric keys and retain pending records through both update APIs" do
+    a = %Child{uuid: Ecto.UUID.generate(), name: "A"}
+    b = %Child{uuid: Ecto.UUID.generate(), name: "B"}
+
+    for field <- [:children, :polys], api <- [:change, :changeset] do
+      original = %Parent{children: [a, b], polys: [a, b]}
+
+      pending =
+        Parent.change(original, %{
+          field => [
+            %{uuid: a.uuid, note: "pending A", __type__: :child},
+            %{uuid: b.uuid, note: "pending B", __type__: :child}
+          ]
+        })
+
+      params = %{
+        field => %{
+          "10" => %{uuid: a.uuid, __type__: :child},
+          "2" => %{uuid: b.uuid, __type__: :child}
+        }
+      }
+
+      cs =
+        if api == :change,
+          do: Parent.change(pending, params),
+          else: Parent.changeset(pending, params, :update)
+
+      assert cs.valid?
+
+      assert Map.fetch!(Ecto.Changeset.apply_changes(cs), field) ==
+               [%{b | note: "pending B"}, %{a | note: "pending A"}]
+
+      cleared = Parent.changeset(cs, %{field => %{}}, :update)
+      assert cleared.valid?
+      assert Map.fetch!(Ecto.Changeset.apply_changes(cleared), field) == []
+    end
+  end
+
+  test "mixed ordinary lists trust declared structs but validate maps regardless of position" do
+    alias Strukt.Test.ParameterCasting.RequiredChild
+    trusted = %RequiredChild{uuid: Ecto.UUID.generate(), name: nil}
+
+    for values <- [[trusted, %{name: "valid"}], [%{name: "valid"}, trusted]] do
+      cs = Parent.changeset(%Parent{}, %{required_children: values})
+      assert cs.valid?
+      children = Ecto.Changeset.apply_changes(cs).required_children
+      assert trusted in children
+      assert Enum.any?(children, &(&1.name == "valid"))
+    end
+
+    refute Parent.changeset(%Parent{}, %{required_children: [trusted, %{name: nil}]}).valid?
+    refute Parent.changeset(%Parent{}, %{required_children: [trusted, %Child{}]}).valid?
+  end
+
+  test "ordinary lists handle keyword maps and reject malformed lists across public APIs" do
+    for api <- [:new, :change, :changeset] do
+      run = fn params ->
+        if api == :new,
+          do: Parent.new(params),
+          else: apply(Parent, api, [%Parent{}, params]) |> Parent.from_changeset()
+      end
+
+      assert {:ok, %{children: [%Child{name: "keyword"}]}} =
+               run.(%{children: [[name: "keyword"]]})
+
+      for value <- [[[1]], [nil], [[], [1]], %{"0" => [1]}] do
+        assert {:error, cs} = run.(%{children: value})
+        assert Keyword.has_key?(cs.errors, :children)
+      end
+    end
+  end
 end

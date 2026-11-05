@@ -9,12 +9,24 @@ defmodule Strukt.Test.ParameterCasting.Child do
   end
 end
 
+defmodule Strukt.Test.ParameterCasting.RequiredChild do
+  use Strukt
+
+  defstruct do
+    field(:name, :string, required: true)
+  end
+end
+
 defmodule Strukt.Test.ParameterCasting.Parent do
   use Strukt
 
   defstruct do
     embeds_one(:child, Strukt.Test.ParameterCasting.Child, on_replace: :update)
     embeds_many(:children, Strukt.Test.ParameterCasting.Child, on_replace: :delete)
+
+    embeds_many(:required_children, Strukt.Test.ParameterCasting.RequiredChild,
+      on_replace: :delete
+    )
 
     polymorphic_embeds_one(:poly,
       types: [child: Strukt.Test.ParameterCasting.Child],
@@ -25,6 +37,14 @@ defmodule Strukt.Test.ParameterCasting.Parent do
       types: [child: Strukt.Test.ParameterCasting.Child],
       on_replace: :delete
     )
+  end
+end
+
+defmodule Strukt.Test.ParameterCasting.CollisionParent do
+  use Strukt
+
+  defstruct do
+    embeds_one(:child, Strukt.Test.ParameterCasting.Collision, on_replace: :update)
   end
 end
 

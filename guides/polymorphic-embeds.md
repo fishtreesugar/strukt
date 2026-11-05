@@ -228,6 +228,9 @@ changeset =
   Reminder.from_changeset(changeset)
 ```
 
+For a partial update to an existing single embed, `change/2` also normalizes child `source:`
+aliases when the type tag is omitted, using the current variant, including pending changes.
+
 `change/2` also accepts an existing changeset. Calling `validate/1` alone runs validation rules
 on the changeset; it does not cast raw polymorphic parameters or validate every already-stored
 child struct again.

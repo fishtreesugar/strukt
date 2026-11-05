@@ -49,6 +49,14 @@ options to macros like `field/3`. The following validation options are provided:
 In all of the above, you can provide a custom validation message using the keyword list variant,
 and setting `:message` to the desired format string.
 
+Empty sets are valid declarations: `one_of: []` rejects supplied non-nil values,
+`none_of: []` excludes nothing, and `subset_of: []` permits only empty subsets.
+These rules still follow Ecto's changed-value validation semantics.
+
+In a named or inline schema, define constants before the fields and functions that use them.
+Field options and inline validations capture the constant's value at that field's declaration.
+For example, `@allowed ["a", "b"]` can supply `one_of: @allowed` on the next field.
+
 `required: true` and `required: [message: "..."]` enable required validation.
 `required: false` disables that inline rule, just like omitting the option. Other validators
 and custom `validate/1` callbacks can still impose additional constraints.

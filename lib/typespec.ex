@@ -157,7 +157,7 @@ defmodule Strukt.Typespec do
 
   defp type_to_type_name({:map, type}) do
     element_type = type_to_type_name(type)
-    map([{element_type, element_type}])
+    map([{primitive(:optional, [primitive(:any)]), element_type}])
   end
 
   defp type_to_type_name(t) when t in [:utc_datetime_usec, :utc_datetime],
