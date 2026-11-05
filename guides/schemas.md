@@ -1,3 +1,5 @@
+<!-- Modified from upstream by the maintainers of the fishtreesugar/strukt fork. -->
+
 # Schemas
 
 Strukt builds on `Ecto.Schema`, so much of what you need to know can be found in the 
@@ -23,6 +25,13 @@ code which is automatically applied when you call `change/2` or `changeset/2`. T
 and operate on `Ecto.Changeset`, which is a powerful way of expressing constraints, and they
 compose well, especially when you have embeds involved.
 
+## Polymorphic Embeds
+
+Use `polymorphic_embeds_one/2` and `polymorphic_embeds_many/2` to accept multiple declared
+schema types in one field. They support Strukt's inline validation options and generated
+union types. The [polymorphic embeds guide](polymorphic-embeds.md) covers declarations,
+type tags, casting, updates, and JSON.
+
 ## Expressing Validations
 
 Let's take a look at the use of inline validation rules, which you pass along with the standard
@@ -39,6 +48,16 @@ options to macros like `field/3`. The following validation options are provided:
 
 In all of the above, you can provide a custom validation message using the keyword list variant,
 and setting `:message` to the desired format string.
+
+`required: true` and `required: [message: "..."]` enable required validation.
+`required: false` disables that inline rule, just like omitting the option. Other validators
+and custom `validate/1` callbacks can still impose additional constraints.
+
+Generated types include `| nil` for optional ordinary fields, even when they have a non-nil
+default. Required ordinary fields and single embeds omit `| nil`, including when `required`
+uses keyword options. These annotations express validation constraints; constructing a raw
+struct or using `from_json/1` does not enforce them. Embed collections use list types for
+validated data; see the JSON guide for the polymorphic-list `null` loading exception.
 
 ### Custom Validations
 

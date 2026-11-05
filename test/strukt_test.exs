@@ -209,7 +209,7 @@ defmodule Strukt.Test do
             %Strukt.Test.Fixtures.EmbeddedWithVirtualField{
               profile: %Strukt.Test.Fixtures.ProfileWithVirtualField{
                 name: "Rafael",
-                phone: nil,
+                phone: "+886999888777",
                 uuid: nil
               },
               uuid: _uuid,
@@ -267,7 +267,7 @@ defmodule Strukt.Test do
   end
 
   test "can parse the params that contain nil value in embedded field" do
-    params = %{profile: nil, walles: nil}
+    params = %{profile: nil, wallets: nil}
 
     assert {:ok,
             %Strukt.Test.Fixtures.EmbeddedParentSchema{profile: nil, uuid: uuid, wallets: []}} =

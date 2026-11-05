@@ -453,6 +453,11 @@ defmodule Strukt do
         Prepares an `Ecto.Changeset` from a struct, or an existing `Ecto.Changeset`, by applying
         the provided params as changes. The resulting changeset is validated.
 
+        Omitted fields retain their current values. Explicit `nil` clears ordinary fields
+        and single embeds; `nil` or `[]` clears embed collections. Embed removal respects
+        `on_replace`, and required validation still applies. Both schema field names and
+        `source:` names are accepted, with source names taking precedence.
+
         See `from_changeset/1`, for converting the changeset back to a struct.
         """
         @impl Strukt
@@ -522,6 +527,9 @@ defmodule Strukt do
       @doc """
       Generates an `Ecto.Changeset` for this type, using the provided params.
 
+      Parameters use schema field names; unlike `new/1` and `change/2`, this function does
+      not normalize `source:` aliases. It applies the same nil-clearing rules as `change/2`.
+
       This function automatically performs validations based on the schema, and additionally,
       it invokes `validate/1` in order to apply custom validations, if present.
 
@@ -588,26 +596,32 @@ defmodule Strukt do
 
           # Ensure a change can always be applied, whether inserting or updated
           changeset =
-            case Map.get(params, f) do
-              nil ->
+            case Map.fetch(params, f) do
+              :error ->
                 changeset
 
-              %_{} = entity when is_nil(prev) ->
+              {:ok, nil} ->
+                Strukt.Params.clear_embed(changeset, field)
+
+              {:ok, []} when is_list(prev) ->
+                Ecto.Changeset.put_embed(changeset, field, [])
+
+              {:ok, %_{} = entity} when is_nil(prev) ->
                 # In this case, we don't have a previous instance, and we don't need to cast
                 Ecto.Changeset.put_embed(changeset, field, Map.from_struct(entity))
 
-              %_{} = entity ->
+              {:ok, %_{} = entity} ->
                 # In this case, we have a previous instance, so we need to change appropriately, but we don't need to cast
                 cs = Ecto.Changeset.change(prev, Map.from_struct(entity))
                 Ecto.Changeset.put_embed(changeset, field, cs)
 
-              [%_{} | _] = entities ->
+              {:ok, [%_{} | _] = entities} ->
                 # When we have a list of entities, we are overwriting the embeds with a new set
                 Ecto.Changeset.put_embed(changeset, field, Enum.map(entities, &Map.from_struct/1))
 
-              other ->
+              {:ok, _other} ->
                 # For all other parameters, we need to cast. Depending on how the embedded entity is configured, this may raise an error
-                cast_embed(changeset, field)
+                Strukt.Params.cast_embed(changeset, field)
             end
 
           __cast_embeds__(changeset, fields)

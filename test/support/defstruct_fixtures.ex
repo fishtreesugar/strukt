@@ -97,7 +97,7 @@ defmodule Strukt.Test.Fixtures do
         @type t :: %__MODULE__{
                 required_filed: integer(),
                 optional_field: integer() | nil,
-                default_field: integer(),
+                default_field: integer() | nil,
                 default_nil_field: integer() | nil
               }
       end

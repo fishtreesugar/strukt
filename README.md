@@ -26,7 +26,7 @@ The oldest combination in the CI matrix is Elixir 1.17.3 with Erlang/OTP 27.
 ``` elixir
 def deps do
   [
-    {:strukt, "~> 0.4.0", hex: :strukt_fork}
+    {:strukt, "~> 0.4.1", hex: :strukt_fork}
   ]
 end
 ```
@@ -82,6 +82,13 @@ iex> {:ok, person} = Person.new(name: "Paul", email: "bitwalker@example.com")
 ...> person == person |> Jason.encode!() |> Person.from_json()
 true
 ```
+
+## Polymorphic Embeds
+
+Fields can hold different schema types using `polymorphic_embeds_one/2` or
+`polymorphic_embeds_many/2`. Strukt handles casting, validation, generated union types,
+and JSON type tags. See the [polymorphic embeds guide](guides/polymorphic-embeds.md)
+for a complete email/SMS example, updates, mixed lists, and error handling.
 
 ## Validation
 
@@ -223,6 +230,12 @@ iex> {:ok, person} = Person.new(%{NAME: "Ivan", email: "ivan@example.com"})
 }
 ```
 
-NOTE: This does not affect serialization/deserialization via `Jason.Encoder` when derived.
+`new/1` and `change/2` accept either `name` or `NAME` (as atom or string keys). When both
+are supplied, the source name wins, even when its value is `nil`; atom keys take precedence
+over string keys for the same name. Direct `changeset/2` calls use schema field names.
+
+The derived JSON encoder and `from_json/1` use the source name (`"NAME"` in this example).
+See the [parameter semantics](guides/usage.md) and [JSON guide](guides/json.md) for omitted
+fields, explicit `nil`, and loading differences.
 
 For more, see the [usage docs](https://hexdocs.pm/strukt_fork/usage.html)

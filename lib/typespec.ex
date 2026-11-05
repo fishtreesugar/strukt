@@ -53,12 +53,11 @@ defmodule Strukt.Typespec do
       fields
       |> Stream.map(fn name -> {name, Map.get(info, name, @empty_meta)} end)
       |> Enum.map(fn {name, meta} ->
-        required? = Map.get(meta, :required) == true
-        default_value = Map.get(meta, :default)
+        required? = required?(meta)
         type_name = type_to_type_name(meta.value_type)
 
         type_spec =
-          if required? or not is_nil(default_value) do
+          if required? do
             type_name
           else
             nilable(type_name)
@@ -73,7 +72,7 @@ defmodule Strukt.Typespec do
       |> Enum.map(fn name -> {name, Map.fetch!(info, name)} end)
       |> Enum.map(fn
         {name, %{type: :embeds_one, value_type: type} = meta} ->
-          required? = Map.get(meta, :required) == true
+          required? = required?(meta)
           type_name = compose_call(type, :t, [])
 
           if required? do
@@ -86,7 +85,7 @@ defmodule Strukt.Typespec do
           {name, List.wrap(compose_call(type, :t, []))}
 
         {name, %{type: :polymorphic_embeds_one, types: types} = meta} ->
-          required? = Map.get(meta, :required) == true
+          required? = required?(meta)
           type_name = polymorphic_type_name(types)
 
           if required? do
@@ -103,6 +102,11 @@ defmodule Strukt.Typespec do
     struct_fields = fields ++ embeds
 
     quote(context: caller, do: @type(t :: %__MODULE__{unquote_splicing(struct_fields)}))
+  end
+
+  defp required?(meta) do
+    required = Map.get(meta, :required)
+    required == true or is_list(required)
   end
 
   defp primitive(atom, args \\ []) when is_atom(atom) and is_list(args),

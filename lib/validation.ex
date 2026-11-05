@@ -43,7 +43,10 @@ defmodule Strukt.Validation do
       fields
       |> Enum.flat_map(fn {name, info} ->
         {validations, _info} = Map.split(info, @validation_opts)
-        Enum.map(validations, fn {v, data_or_opts} -> {name, v, data_or_opts} end)
+
+        for {validation, opts} <- validations,
+            {validation, opts} != {:required, false},
+            do: {name, validation, opts}
       end)
 
     has_validations? = length(validations) > 0
@@ -66,7 +69,7 @@ defmodule Strukt.Validation do
     |> Enum.reduce(Macro.var(:changeset, caller), fn {field, validation, data_or_opts}, acc ->
       ast =
         case validation do
-          :required when is_boolean(data_or_opts) ->
+          :required when data_or_opts == true ->
             quote do
               Ecto.Changeset.validate_required(unquote(field), trim: true)
             end
