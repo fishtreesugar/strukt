@@ -1,5 +1,11 @@
 # 0.4.1
 
+- Fixed polymorphic embeds restoring stale data after clearing or switching types within
+  one changeset, including stale values satisfying required validation.
+- Match embed list updates by supplied primary keys before falling back to position,
+  preserving pending changes during removal and reordering without mixing records.
+- Generate nested primary keys for empty map parameters and preserve inferred polymorphic
+  type tags across source-name normalization.
 - Fixed explicit `nil` updates for ordinary and polymorphic embeds: single embeds clear,
   and embed collections normalize `nil` to `[]`. List elements cannot be `nil`.
   Unlike 0.4.0, clearing existing embeds now observes `on_replace` and required validation;

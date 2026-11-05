@@ -128,9 +128,15 @@ the new schema's defaults rather than carrying over the previous variant's field
 ```
 
 A supplied list defines the resulting list membership and order; it does not append entries.
-For partial map updates, Strukt uses the current entry at the same position as context when
-its module matches. Supply complete values when replacing or reordering entries rather than
-relying on an ID-based merge of list items. Omitting the entire field keeps the existing list.
+For partial map updates, Strukt first matches supplied primary keys against current entries
+of the same module, including pending changes. This supports `id`, `uuid`, and composite keys;
+keys are cast to their declared types before comparison. Include the primary keys when
+reordering or removing entries so retained items keep their own data.
+
+If no primary key is supplied, Strukt uses the entry at the same position when its module
+matches. An explicit nil, invalid, incomplete, or unmatched key never borrows data from that
+position. For schemas without primary keys, supply complete values when reordering entries.
+Omitting the entire field keeps the existing list.
 
 ### Already Constructed Structs
 
@@ -266,6 +272,12 @@ end
 {:ok, tagged} = TaggedReminder.new(channel: %{kind: "sms", number: "+15555550103"})
 %SMSChannel{number: "+15555550103"} = tagged.channel
 ```
+
+You can alternatively infer a variant from incoming field names with a type declaration such
+as `types: [email: [module: EmailChannel, identify_by_fields: [:emailAddress]]]`. These names
+refer to the input keys, before `source:` normalization. Strukt preserves the inferred tag
+through normalization, including for lists and custom discriminator keys. Explicit type tags
+are preferable when variants share field names.
 
 Strukt also generates a union of the declared variant types for each polymorphic field.
 Optional single embeds include `nil`; required single embeds omit it. List fields contain

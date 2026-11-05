@@ -106,9 +106,11 @@ replaced with the schema default; they are not equivalent to explicit `nil`.
 
 Struct parameters supply all their fields, including `nil` and default values. Use a map or
 keyword list when expressing a partial update. Supplied embed lists define the resulting
-membership, rather than appending to the current list. During `change/2` normalization,
-embed parameter maps use the current entry at the same position as context; changing a
-polymorphic entry's type starts with the new type's defaults instead.
+membership, rather than appending to the current list. Supplied primary keys are cast to their
+schema types and matched against current entries of the same module, including pending
+changes. If no primary key is supplied, the entry at the same position supplies context.
+An explicit nil, invalid, incomplete, or unmatched key never falls back to another entry's
+position. Changing a polymorphic entry's type starts with the new type's defaults instead.
 
 ### Parameter Names and Changeset APIs
 
