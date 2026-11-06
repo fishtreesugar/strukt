@@ -1,4 +1,4 @@
-# Unreleased
+# 0.4.2
 
 - Restore source-name mapping and nested normalization for string-keyed pair-list parameters,
   including map entries returned by `Enum.filter/2` and `Enum.reject/2`. Ordinary embedded

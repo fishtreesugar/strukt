@@ -24,7 +24,7 @@ The oldest combination in the CI matrix is Elixir 1.17.3 with Erlang/OTP 27.
 ``` elixir
 def deps do
   [
-    {:strukt, "~> 0.4.1", hex: :strukt_fork}
+    {:strukt, "~> 0.4.2", hex: :strukt_fork}
   ]
 end
 ```
