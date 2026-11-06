@@ -3,10 +3,54 @@
 defmodule Strukt.JSON do
   @moduledoc false
 
+  # Normalize `Jason.Encoder` and `{Jason.Encoder, only: fields}` / `except: fields`
+  # entries from `@derives`. Returns nil when no encoder is requested.
+  def derive_options(_module, []), do: nil
+
+  def derive_options(module, entries) do
+    Enum.reduce(entries, [], fn
+      Jason.Encoder, acc ->
+        acc
+
+      {Jason.Encoder, opts}, acc ->
+        with true <- Keyword.keyword?(opts),
+             {selected, []} <- Keyword.split(Keyword.merge(acc, opts), [:only, :except]),
+             true <- length(selected) <= 1,
+             true <- Enum.all?(selected, fn {_, fields} -> field_list?(fields) end) do
+          selected
+        else
+          _ -> invalid_derive!(module, opts)
+        end
+    end)
+  end
+
+  defp field_list?(fields), do: is_list(fields) and Enum.all?(fields, &is_atom/1)
+
+  defp invalid_derive!(module, opts) do
+    raise ArgumentError,
+          "invalid Jason.Encoder options in @derives for #{inspect(module)}, expected " <>
+            "`only: fields` or `except: fields` with a list of field names, got: #{inspect(opts)}"
+  end
+
+  def check_derive_fields!(module, opts, struct) do
+    for {key, fields} <- opts,
+        unknown = Enum.reject(fields, &Map.has_key?(struct, &1)),
+        unknown != [] do
+      raise ArgumentError,
+            "`#{inspect(key)}` in @derives for #{inspect(module)} specifies fields " <>
+              "that are not defined in the schema: #{inspect(unknown)}"
+    end
+
+    :ok
+  end
+
   # Use Ecto's dump callbacks and schema source names, while retaining Strukt's
   # explicit-nil key semantics for polymorphic values at any nesting depth.
-  def dump(%module{} = entity) do
-    Map.new(module.__schema__(:fields), fn field ->
+  # `only`/`except` apply to this struct; nested embeds are dumped in full.
+  def dump(%module{} = entity, opts \\ []) do
+    module.__schema__(:fields)
+    |> select_fields(opts)
+    |> Map.new(fn field ->
       type = module.__schema__(:type, field)
       value = Map.fetch!(entity, field)
 
@@ -20,6 +64,10 @@ defmodule Strukt.JSON do
       end
     end)
   end
+
+  defp select_fields(fields, only: only), do: Enum.filter(fields, &(&1 in only))
+  defp select_fields(fields, except: except), do: Enum.reject(fields, &(&1 in except))
+  defp select_fields(fields, _opts), do: fields
 
   defp dump_value(
          {:parameterized, {PolymorphicEmbed, _}} = type,

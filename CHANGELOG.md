@@ -1,3 +1,24 @@
+# 0.4.3
+
+- Generate timestamps for new nested Strukt records in ordinary and polymorphic embeds
+  created through `new/1` and `change/2`, without making timestamps castable from user params.
+- Enforce `required:` on missing or empty `embeds_many` and `polymorphic_embeds_many`
+  collections without Ecto's ineffective-validation warning.
+- Accept changeset action atoms such as `:validate`, `:replace`, and `:ignore` in `change/2`.
+- Preserve trusted ordinary child structs, including their timestamps, consistently across
+  `new/1`, `change/2`, and the direct changeset APIs.
+- Honor `on_replace` when a supplied single-embed struct has a different primary key.
+- Support `on_type_not_found: :ignore` for single polymorphic embeds. Reject `:nilify` for
+  polymorphic lists at schema compilation, instead of clearing the whole list to `nil`.
+- Apply `@derive` before `defstruct` only once, avoiding duplicate protocol implementations.
+- Handle bare `@derives Jason.Encoder` and encoder tuples with `only:` or `except:` options.
+- Index embed-list entries by identity and position instead of repeatedly scanning lists.
+- Return `{:error, %ArgumentError{}}` for non-object top-level JSON in `from_json/1`.
+- Make `from_json/1` overridable, with `super/1` invoking the generated loader, including
+  overrides inside schema blocks.
+- Avoid merging generated `changeset/1,2` clauses with user-defined implementations.
+- Correct the validator builder documentation example and JSON derivation examples.
+
 # 0.4.2
 
 - Restore source-name mapping and nested normalization for string-keyed pair-list parameters,

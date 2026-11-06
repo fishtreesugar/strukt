@@ -79,6 +79,12 @@ defmodule Strukt.Schema do
     options = if type == :timestamps, do: List.first(options) || [], else: options
     {validations, options} = Strukt.Field.split_options(options)
 
+    if type == :polymorphic_embeds_many and options[:on_type_not_found] == :nilify do
+      raise ArgumentError,
+            "polymorphic_embeds_many #{inspect(name)} in #{inspect(module)} does not support " <>
+              "on_type_not_found: :nilify; use :ignore, :changeset_error, or :raise"
+    end
+
     field = %{name: name, value_type: value_type, options: options, context: context(module)}
 
     if type != :timestamps do

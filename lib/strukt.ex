@@ -80,7 +80,6 @@ defmodule Strukt do
     :schema_prefix,
     :foreign_key_type,
     :timestamps_opts,
-    :derive,
     :field_source_mapper
   ]
 
@@ -185,8 +184,8 @@ defmodule Strukt do
   This variant of `defstruct` can accept a list of fields, just like `Kernel.defstruct/1`, in which
   case it simply defers to `Kernel.defstruct/1` and does nothing; or it can be passed a block
   containing an `Ecto.Schema` definition. The resulting struct/schema is defined in the current
-  module scope, and will inherit attributes like `@derive`, `@primary_key`, etc., which are already
-  defined in the current scope.
+  module scope, and will inherit attributes like `@derives`, `@derive`, `@primary_key`, etc., which
+  are already defined in the current scope.
 
   ## Example
 
@@ -199,7 +198,7 @@ defmodule Strukt do
       defmodule Person do
         use Strukt
 
-        @derive [Jason.Encoder]
+        @derives [Jason.Encoder]
         defstruct do
           field :name, :string
         end
@@ -242,7 +241,7 @@ defmodule Strukt do
         end
       end
 
-  NOTE: Unlike `Strukt.defstruct/1`, which inherits attributes like `@derive` or `@primary_key` from
+  NOTE: Unlike `Strukt.defstruct/1`, which inherits attributes like `@derives` or `@primary_key` from
   the surrounding scope; this macro requires them to be defined in the body, as shown above.
   """
   defmacro defstruct(name, do: body) do
@@ -375,12 +374,20 @@ defmodule Strukt do
           end
         )
 
-        derives = Module.get_attribute(__MODULE__, :derives) || []
+        # Strukt implements Jason.Encoder itself; other entries are ordinary derivations.
+        {jason_derives, derives} =
+          __MODULE__
+          |> Module.get_attribute(:derives)
+          |> List.wrap()
+          |> Enum.split_with(&(&1 == Jason.Encoder or match?({Jason.Encoder, _}, &1)))
 
-        if Jason.Encoder in derives do
-          Module.put_attribute(__MODULE__, :derives_jason, true)
-          Module.put_attribute(__MODULE__, :derives, Enum.reject(derives, &(&1 == Jason.Encoder)))
-        end
+        Module.put_attribute(
+          __MODULE__,
+          :derives_jason,
+          Strukt.JSON.derive_options(__MODULE__, jason_derives)
+        )
+
+        Enum.each(derives, &Module.put_attribute(__MODULE__, :derive, &1))
 
         embedded_schema do
           unquote({:__block__, meta, fields_ast})
@@ -446,6 +453,33 @@ defmodule Strukt do
           changeset
           |> __validate__()
           |> validator_builder_call([])
+        end
+
+        # Define the loader before emitting user functions so overrides can call super/1.
+        if not Module.defines?(__MODULE__, {:from_json, 1}) do
+          @doc """
+          Deserialize this type from a JSON string or iodata.
+
+          Returns `{:error, reason}` for invalid JSON or a top-level value that is not an
+          object. Schema loading errors may raise. Override this function and call `super/1`
+          to customize the result of the default loader.
+          """
+          @spec from_json(binary | iodata) :: {:ok, t} | {:error, reason :: term}
+          def from_json(input) do
+            case Jason.decode(input, strings: :copy) do
+              {:ok, %{} = map} ->
+                {:ok, Ecto.embedded_load(__MODULE__, map, :json)}
+
+              {:ok, other} ->
+                {:error,
+                 ArgumentError.exception("expected a JSON object, got: #{inspect(other)}")}
+
+              {:error, _} = error ->
+                error
+            end
+          end
+
+          defoverridable from_json: 1
         end
 
         defoverridable unquote(__MODULE__)
@@ -534,6 +568,25 @@ defmodule Strukt do
 
     {changeset, validate_body} = Strukt.Validator.Builder.compile(env, validators, [])
 
+    json_impl =
+      case Module.get_attribute(env.module, :derives_jason) do
+        nil ->
+          nil
+
+        json_opts ->
+          Strukt.JSON.check_derive_fields!(env.module, json_opts, Macro.struct!(env.module, env))
+
+          quote do
+            defimpl Jason.Encoder, for: unquote(schema_module) do
+              def encode(value, opts) do
+                value
+                |> Strukt.JSON.dump(unquote(json_opts))
+                |> Jason.Encode.map(opts)
+              end
+            end
+          end
+      end
+
     quote location: :keep do
       # Ecto has already resolved generated primary keys, timestamp names/types,
       # and parameterized types. Include them without making timestamps castable.
@@ -555,7 +608,9 @@ defmodule Strukt do
       defp validator_builder_call(unquote(changeset), opts),
         do: unquote(validate_body)
 
-      @doc """
+      # User-defined `changeset/1,2` replace the generated versions.
+      # The internal `changeset/3` is always generated.
+      changeset_docs = """
       Generates an `Ecto.Changeset` for this type, using the provided params.
 
       Parameters use schema field names; unlike `new/1` and `change/2`, this function does
@@ -567,51 +622,61 @@ defmodule Strukt do
       Use `from_changeset/1` to apply the changes in the changeset,
       and get back a valid instance of this type
       """
-      @spec changeset(t) :: Ecto.Changeset.t()
-      @spec changeset(t, Keyword.t() | map()) :: Ecto.Changeset.t()
-      def changeset(%__MODULE__{} = entity, params \\ %{}) do
-        changeset(entity, params, nil)
+
+      case {Module.defines?(__MODULE__, {:changeset, 1}),
+            Module.defines?(__MODULE__, {:changeset, 2})} do
+        {false, false} ->
+          @doc changeset_docs
+          @spec changeset(t) :: Ecto.Changeset.t()
+          @spec changeset(t, Keyword.t() | map()) :: Ecto.Changeset.t()
+          def changeset(%__MODULE__{} = entity, params \\ %{}) do
+            changeset(entity, params, nil)
+          end
+
+        {true, false} ->
+          @doc changeset_docs
+          @spec changeset(t, Keyword.t() | map()) :: Ecto.Changeset.t()
+          def changeset(%__MODULE__{} = entity, params), do: changeset(entity, params, nil)
+
+        {false, true} ->
+          @spec changeset(t) :: Ecto.Changeset.t()
+          def changeset(entity), do: changeset(entity, %{})
+
+        {true, true} ->
+          :ok
       end
 
       # This function is used to build and validate a changeset for the corresponding action.
       @doc false
-      def changeset(%__MODULE__{} = entity, params, action)
-          when action in [:insert, :update, :delete, nil] do
-        params =
-          case params do
-            %__MODULE__{} ->
-              Map.from_struct(params)
+      def changeset(%__MODULE__{} = entity, params, action) when is_atom(action) do
+        {generated, params} = params |> __changeset_params__() |> Strukt.Params.pop_generated()
 
-            other ->
-              Strukt.Params.to_map(other)
-          end
-
-        cast(entity, params, @cast_fields)
-        |> Map.put(:action, action)
-        |> __cast_embeds__(Strukt.Params.supplied_fields(params, @cast_embed_fields))
-        |> __cast_polymorphic_embeds__(
-          Strukt.Params.supplied_fields(params, @cast_polymorphic_embed_fields)
-        )
-        |> validate()
+        entity
+        |> Strukt.Params.put_generated(generated, @cast_fields)
+        |> cast(params, @cast_fields)
+        |> __cast_changeset__(params, action)
       end
 
       def changeset(%Ecto.Changeset{data: %__MODULE__{}} = changeset, params, action)
-          when action in [:insert, :update, :delete, nil] do
-        params =
-          case params do
-            %__MODULE__{} ->
-              Map.from_struct(params)
+          when is_atom(action) do
+        {_generated, params} = params |> __changeset_params__() |> Strukt.Params.pop_generated()
 
-            other ->
-              Strukt.Params.to_map(other)
-          end
+        changeset
+        |> cast(params, @cast_fields)
+        |> __cast_changeset__(params, action)
+      end
 
-        cast(changeset, params, @cast_fields)
+      defp __changeset_params__(%__MODULE__{} = params), do: Map.from_struct(params)
+      defp __changeset_params__(params), do: Strukt.Params.to_map(params)
+
+      defp __cast_changeset__(changeset, params, action) do
+        changeset
         |> Map.put(:action, action)
         |> __cast_embeds__(Strukt.Params.supplied_fields(params, @cast_embed_fields))
         |> __cast_polymorphic_embeds__(
           Strukt.Params.supplied_fields(params, @cast_polymorphic_embed_fields)
         )
+        |> Strukt.Params.drop_generated_params()
         |> validate()
       end
 
@@ -665,28 +730,12 @@ defmodule Strukt do
 
       def from_changeset(%Ecto.Changeset{} = cs), do: {:error, cs}
 
-      @doc "Deserialize this type from a JSON string or iodata"
-      @spec from_json(binary | iodata) :: {:ok, t} | {:error, reason :: term}
-      def from_json(input) do
-        with {:ok, map} <- Jason.decode(input, strings: :copy) do
-          {:ok, Ecto.embedded_load(__MODULE__, map, :json)}
-        end
-      end
-
       # Generate the __validate__ function
       validate_ast = Strukt.Validation.generate(__MODULE__, @validated_fields)
       Code.eval_quoted(validate_ast, [], __ENV__)
 
       # Handle conditional implementation of Jason.Encoder
-      if Module.get_attribute(__MODULE__, :derives_jason) do
-        defimpl Jason.Encoder, for: unquote(schema_module) do
-          def encode(value, opts) do
-            value
-            |> Strukt.JSON.dump()
-            |> Jason.Encode.map(opts)
-          end
-        end
-      end
+      unquote(json_impl)
     end
   end
 end
