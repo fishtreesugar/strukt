@@ -4,6 +4,123 @@ defmodule Strukt.ParameterCastingTest do
   use ExUnit.Case, async: true
   alias Strukt.Test.ParameterCasting.{Child, Parent, Collision}
 
+  test "filtered string-keyed pair lists retain source fields and validation" do
+    params =
+      Enum.reject(%{"NAME" => "Ada", "note" => "saved", "absent" => nil}, fn {_, v} ->
+        is_nil(v)
+      end)
+
+    assert {:ok, %Child{name: "Ada", note: "saved", uuid: uuid}} = Child.new(params)
+    assert is_binary(uuid)
+
+    alias Strukt.Test.ParameterCasting.Email
+    assert {:ok, %{address: "a@example.com"}} = Email.new([{"ADDRESS", "a@example.com"}])
+    assert {:error, cs} = Email.new([{"ADDRESS", nil}])
+    assert Keyword.has_key?(cs.errors, :address)
+  end
+
+  test "pair-list source aliases update structs and pending changesets including explicit nil" do
+    original = %Child{uuid: Ecto.UUID.generate(), name: "original", note: "saved"}
+    pending = Child.change(original, name: "pending")
+
+    for current <- [original, pending] do
+      cs = Child.change(current, [{"NAME", "next"}])
+      assert cs.valid?
+      assert Ecto.Changeset.apply_changes(cs) == %{original | name: "next"}
+      cleared = Child.change(cs, [{"NAME", nil}, {"name", "ignored"}])
+      assert cleared.valid?
+      assert Ecto.Changeset.apply_changes(cleared) == %{original | name: nil}
+    end
+  end
+
+  for field <- [:child, :children, :poly, :polys] do
+    test "top-level pair lists normalize nested #{field} fields and generate keys" do
+      field = unquote(field)
+      child = %{"NAME" => "nested", "__type__" => "child"}
+      value = if field in [:children, :polys], do: [child], else: child
+      assert {:ok, parent} = Parent.new([{to_string(field), value}])
+      assert [%Child{name: "nested", uuid: uuid}] = List.wrap(Map.fetch!(parent, field))
+      assert is_binary(uuid)
+    end
+  end
+
+  for field <- [:child, :children] do
+    test "nested string-keyed pair lists normalize #{field} creation and updates" do
+      field = unquote(field)
+      wrap = fn child -> if unquote(field == :children), do: [child], else: child end
+
+      assert {:ok, parent} =
+               Parent.new(%{field => wrap.([{"NAME", "nested"}, {"note", "saved"}])})
+
+      [child] = List.wrap(Map.fetch!(parent, field))
+      assert child.name == "nested"
+      assert is_binary(child.uuid)
+
+      cs = Parent.change(parent, %{field => wrap.([{"NAME", "updated"}])})
+      assert cs.valid?
+
+      assert List.wrap(Map.fetch!(Ecto.Changeset.apply_changes(cs), field)) == [
+               %{child | name: "updated"}
+             ]
+    end
+
+    test "direct changesets accept nested pair lists with field names in #{field}" do
+      field = unquote(field)
+      params = [{"name", "direct"}, {"note", "saved"}]
+      value = if unquote(field == :children), do: [params], else: params
+      cs = Parent.changeset(%Parent{}, %{field => value})
+      assert cs.valid?
+
+      assert [%Child{name: "direct", note: "saved", uuid: nil}] =
+               List.wrap(Map.fetch!(Ecto.Changeset.apply_changes(cs), field))
+    end
+  end
+
+  test "pair-list embed entries match IDs before borrowing positional context" do
+    a = %Child{uuid: Ecto.UUID.generate(), name: "A", note: "saved A"}
+    b = %Child{uuid: Ecto.UUID.generate(), name: "B", note: "saved B"}
+    parent = %Parent{children: [a, b]}
+
+    cs = Parent.change(parent, children: [[{"uuid", b.uuid}, {"NAME", "B2"}], [{"uuid", a.uuid}]])
+    assert cs.valid?
+    assert Ecto.Changeset.apply_changes(cs).children == [%{b | name: "B2"}, a]
+  end
+
+  for api <- [:new, :change, :changeset, :pending_change, :pending_changeset] do
+    test "#{api} reports malformed top-level params as Ecto cast errors" do
+      original = %Parent{title: "saved"}
+      pending = Parent.change(original, title: "pending")
+
+      for params <- [42, :atom, "invalid", [1], [{42, "invalid key"}], [{:title, "x"}, :bad]] do
+        assert_raise Ecto.CastError, fn ->
+          case unquote(api) do
+            :new -> Parent.new(params)
+            :change -> Parent.change(original, params)
+            :changeset -> Parent.changeset(original, params)
+            :pending_change -> Parent.change(pending, params)
+            :pending_changeset -> Parent.changeset(pending, params, :update)
+          end
+        end
+      end
+    end
+  end
+
+  test "the Ecto invalid sentinel produces an invalid changeset without casting embeds" do
+    original = %Parent{title: "saved", child: %Child{name: "saved"}}
+    pending = Parent.change(original, title: "pending")
+    assert {:error, %{valid?: false}} = Parent.new(:invalid)
+
+    for cs <- [
+          Parent.changeset(original, :invalid),
+          Parent.change(original, :invalid),
+          Parent.changeset(pending, :invalid, :update),
+          Parent.change(pending, :invalid)
+        ] do
+      refute cs.valid?
+      assert Ecto.Changeset.apply_changes(cs).child == original.child
+    end
+  end
+
   test "pending ordinary single update retains omitted fields and identity with on_replace update" do
     child = %Child{uuid: Ecto.UUID.generate(), name: "original", note: "saved"}
     pending = Parent.change(%Parent{child: child}, child: %{name: "pending"})

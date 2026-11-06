@@ -12,6 +12,112 @@ defmodule Strukt.SchemaDeclarationsTest do
   # These modules are compiled by each test, after this test module itself is compiled.
   defp call(module, function, args), do: apply(module, function, args)
 
+  defp field_types(beam) do
+    {:ok, types} = Code.Typespec.fetch_types(beam)
+
+    {:type, {:t, {:type, _, :map, fields}, []}} =
+      Enum.find(types, fn {_, {name, _, _}} -> name == :t end)
+
+    Map.new(fields, fn {:type, _, :map_field_exact, [{:atom, _, name}, type]} ->
+      {name, Macro.to_string(Code.Typespec.type_to_quoted({name, type, []}))}
+    end)
+  end
+
+  test "default UUID keys have a nullable Ecto UUID typespec" do
+    [{_, beam}] =
+      compile(Strukt.Test.SchemaDeclarations.UUIDType, "defstruct do\nfield :name, :string\nend")
+
+    assert field_types(beam).uuid == "uuid() :: Ecto.UUID.t() | nil"
+  end
+
+  for {name, type, expected} <- [
+        {"Integer", ":integer", "integer()"},
+        {"Binary", ":binary_id", "binary()"},
+        {"UUID", "Ecto.UUID", "Ecto.UUID.t()"},
+        {"Custom", "Strukt.Test.SchemaOptions.CustomID", "binary()"},
+        {"Parameterized", "Strukt.Test.SchemaOptions.ParamID", "binary()"}
+      ] do
+    test "attribute-defined #{name} primary keys retain their types" do
+      module = Module.concat(Strukt.Test.SchemaDeclarations, "Attribute#{unquote(name)}Type")
+
+      [{_, beam}] =
+        compile(module, """
+        @primary_key {:id, #{unquote(type)}, autogenerate: false}
+        defstruct do
+          field :name, :string
+        end
+        """)
+
+      assert field_types(beam).id == "id() :: #{unquote(expected)} | nil"
+    end
+  end
+
+  test "default timestamps have nullable NaiveDateTime types" do
+    [{_, beam}] =
+      compile(Strukt.Test.SchemaDeclarations.TimestampTypes, """
+      defstruct do
+        field :name, :string
+        timestamps()
+      end
+      """)
+
+    assert field_types(beam).inserted_at == "inserted_at() :: NaiveDateTime.t() | nil"
+    assert field_types(beam).updated_at == "updated_at() :: NaiveDateTime.t() | nil"
+  end
+
+  test "ID types include the negative integers accepted by casting" do
+    for {suffix, body} <- [
+          {"Attribute",
+           "@primary_key {:id, :id, autogenerate: false}\ndefstruct do\nfield :name, :string\nend"},
+          {"Field", "defstruct do\nfield :id, :id, primary_key: true\nend"}
+        ] do
+      module = Module.concat(Strukt.Test.SchemaDeclarations, "#{suffix}IDRange")
+      [{_, beam}] = compile(module, body)
+      assert {:ok, %{id: -1}} = call(module, :new, [[id: -1]])
+      assert field_types(beam).id == "id() :: integer() | nil"
+    end
+  end
+
+  test "generated field types retain virtual and required fields without making timestamps castable" do
+    module = Strukt.Test.SchemaDeclarations.GeneratedFieldTypes
+
+    [{_, beam}] =
+      compile(module, """
+      @primary_key false
+      defstruct do
+        field :name, :string, required: true
+        field :trace, :integer, default: 0, virtual: true
+        timestamps(type: :utc_datetime)
+      end
+      """)
+
+    types = field_types(beam)
+    refute Map.has_key?(types, :uuid)
+    assert types.name == "name() :: String.t()"
+    assert types.trace == "trace() :: integer() | nil"
+    assert types.inserted_at == "inserted_at() :: DateTime.t() | nil"
+
+    cs = call(module, :changeset, [struct(module), %{name: "valid", inserted_at: "not a date"}])
+    assert cs.valid?
+    refute Map.has_key?(cs.changes, :inserted_at)
+  end
+
+  test "timestamp types respect declaration context, renamed fields and disabled fields" do
+    [{_, beam}] =
+      compile(Strukt.Test.SchemaDeclarations.RenamedTimestampTypes, """
+      defstruct do
+        @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at, updated_at: false]
+        timestamps()
+        @timestamps_opts [type: :naive_datetime]
+      end
+      """)
+
+    types = field_types(beam)
+    assert types.created_at == "created_at() :: DateTime.t() | nil"
+    refute Map.has_key?(types, :inserted_at)
+    refute Map.has_key?(types, :updated_at)
+  end
+
   test "keyword range validation compiles and applies the custom message" do
     compile(
       Strukt.Test.SchemaDeclarations.Range,
