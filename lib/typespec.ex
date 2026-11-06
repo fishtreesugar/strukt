@@ -43,8 +43,8 @@ defmodule Strukt.Typespec do
   The description contains a few fields, whose values are sourced based on the following:
 
 
-  * `info` - A map of every field for which we have validation metadata
-  * `fields` - This is a list of all field names which are defined via `field/3`
+  * `info` - Field types and validation metadata, including generated schema fields
+  * `fields` - All non-embed fields, including primary keys, timestamps, and virtual fields
   * `embeds` - This is a list of all field names which are defined via `embeds_one/3` or `embeds_many/3`
   """
   def generate(%__MODULE__{caller: caller, info: info, fields: fields, embeds: embeds}) do
@@ -141,7 +141,7 @@ defmodule Strukt.Typespec do
   defp union([type]), do: type
   defp union([type | types]), do: {:|, [], [type, union(types)]}
 
-  defp type_to_type_name(:id), do: primitive(:non_neg_integer)
+  defp type_to_type_name(:id), do: primitive(:integer)
   defp type_to_type_name(:binary_id), do: primitive(:binary)
   defp type_to_type_name(:integer), do: primitive(:integer)
   defp type_to_type_name(:float), do: primitive(:float)
@@ -171,6 +171,14 @@ defmodule Strukt.Typespec do
 
   defp type_to_type_name(:date),
     do: compose_call(Date, :t, [])
+
+  defp type_to_type_name({:parameterized, {Ecto.Enum, _}}), do: primitive(:atom)
+
+  defp type_to_type_name({:parameterized, {module, params}}) do
+    if defines_module_type?(module),
+      do: compose_call(module_alias_ast(module), :t, []),
+      else: type_to_type_name(module.type(params))
+  end
 
   defp type_to_type_name(mod) when is_atom(mod) and not is_nil(mod) do
     case mod do

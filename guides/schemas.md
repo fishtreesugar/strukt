@@ -88,6 +88,11 @@ struct or using `from_json/1` does not enforce them. Embed collections use list 
 validated data; see the JSON guide for the polymorphic-list `null` loading exception.
 Ordinary arrays and typed maps allow `nil` elements or values during casting, so their
 generated element types include `| nil`, even when the container itself is required.
+Attribute-defined primary keys and generated timestamps also retain their schema types,
+including custom timestamp names and disabled timestamps. The default key is typed
+`Ecto.UUID.t() | nil`; default timestamps use `NaiveDateTime.t() | nil`, and UTC timestamps
+use `DateTime.t() | nil`. The `:id` type uses `integer()`, matching Ecto's acceptance
+of negative values; use a numeric validation if an ID must be nonnegative.
 
 ### Custom Validations
 

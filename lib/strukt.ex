@@ -535,13 +535,19 @@ defmodule Strukt do
     {changeset, validate_body} = Strukt.Validator.Builder.compile(env, validators, [])
 
     quote location: :keep do
+      # Ecto has already resolved generated primary keys, timestamp names/types,
+      # and parameterized types. Include them without making timestamps castable.
+      schema_fields = Module.get_attribute(__MODULE__, :ecto_changeset_fields)
+      embed_fields = @cast_embed_fields ++ @cast_polymorphic_embed_fields
+      type_info = Map.new(schema_fields, fn {field, type} -> {field, %{value_type: type}} end)
+
       # Injects the type spec for this module based on the schema
       typespec_ast =
         Strukt.Typespec.generate(%Strukt.Typespec{
           caller: __MODULE__,
-          info: @validated_fields,
-          fields: @cast_fields,
-          embeds: @cast_embed_fields ++ @cast_polymorphic_embed_fields
+          info: Map.merge(type_info, @validated_fields),
+          fields: Keyword.keys(schema_fields) -- embed_fields,
+          embeds: embed_fields
         })
 
       Code.eval_quoted(typespec_ast, [], __ENV__)
@@ -576,11 +582,8 @@ defmodule Strukt do
             %__MODULE__{} ->
               Map.from_struct(params)
 
-            m when is_map(m) ->
-              m
-
             other ->
-              Enum.into(other, %{})
+              Strukt.Params.to_map(other)
           end
 
         cast(entity, params, @cast_fields)
@@ -599,11 +602,8 @@ defmodule Strukt do
             %__MODULE__{} ->
               Map.from_struct(params)
 
-            m when is_map(m) ->
-              m
-
             other ->
-              Enum.into(other, %{})
+              Strukt.Params.to_map(other)
           end
 
         cast(changeset, params, @cast_fields)
