@@ -19,10 +19,10 @@ defmodule Strukt.Validator.Builder do
 
   ## Example
 
-      Strukt.Validator.Builder.compile(env [
-        {Strukt.Validators.RequireOnInsert, [:field], quote(do: changeset.action == :insert),
-        {Strukt.Validators.RequireOnUpdate, [:other_field], quote(do: changeset.action == :update)},
-        {Strukt.Validators.RequireOnChange, [:other_field], true},
+      Strukt.Validator.Builder.compile(env, [
+        {Strukt.Validators.RequireOnInsert, [:field], [quote(do: changeset.action == :insert)]},
+        {Strukt.Validators.RequireOnUpdate, [:other_field], [quote(do: changeset.action == :update)]},
+        {Strukt.Validators.RequireOnChange, [:other_field], true}
       ], [])
 
   """

@@ -14,6 +14,8 @@ defmodule Strukt.Validation do
     :number
   ]
 
+  @list_types [:embeds_many, :polymorphic_embeds_many]
+
   @doc """
   Given the calling module in which a struct is being defined, and validation metadata
   about the fields of that struct; this function generates AST for an optimized validation
@@ -32,8 +34,8 @@ defmodule Strukt.Validation do
 
       def __validate__(changeset) do
         changeset
-        |> Ecto.Changeset.validate_required(:name, [])
-        |> Ecto.Changeset.validate_required(:volume, message: "must set volume")
+        |> Ecto.Changeset.validate_required(:name, trim: true)
+        |> Ecto.Changeset.validate_required(:volume, trim: true, message: "must set volume")
         |> Ecto.Changeset.validate_inclusion(:volume, 0..100, message: "must be in the range 0..100")
       end
 
@@ -46,7 +48,7 @@ defmodule Strukt.Validation do
 
         for {validation, opts} <- validations,
             {validation, opts} != {:required, false},
-            do: {name, validation, opts}
+            do: {name, validation, opts, info[:type]}
       end)
 
     has_validations? = length(validations) > 0
@@ -66,9 +68,22 @@ defmodule Strukt.Validation do
 
   defp generate_body(caller, validations) do
     validations
-    |> Enum.reduce(Macro.var(:changeset, caller), fn {field, validation, data_or_opts}, acc ->
+    |> Enum.reduce(Macro.var(:changeset, caller), fn spec, acc ->
+      {field, validation, data_or_opts, type} = spec
+
       ast =
         case validation do
+          # Ecto's validate_required ignores embeds_many and accepts empty arrays.
+          :required when type in @list_types and (data_or_opts == true or is_list(data_or_opts)) ->
+            opts = if data_or_opts == true, do: [], else: Keyword.delete(data_or_opts, :trim)
+
+            quote do
+              Strukt.Validation.validate_required_list(
+                unquote(field),
+                unquote(Macro.escape(opts))
+              )
+            end
+
           :required when data_or_opts == true ->
             quote do
               Ecto.Changeset.validate_required(unquote(field), trim: true)
@@ -256,5 +271,34 @@ defmodule Strukt.Validation do
 
       Macro.pipe(acc, ast, 0)
     end)
+  end
+
+  @doc false
+  # Required lists must be present and non-empty, mirroring `validate_required/3`.
+  def validate_required_list(%Ecto.Changeset{} = changeset, field, opts) do
+    required = changeset.required
+
+    changeset = %{
+      changeset
+      | required: if(field in required, do: required, else: [field | required])
+    }
+
+    if Ecto.Changeset.get_field(changeset, field) in [nil, []] and
+         not Keyword.has_key?(changeset.errors, field) do
+      {message, keys} = message(opts, "can't be blank", validation: :required)
+      Ecto.Changeset.add_error(changeset, field, message, keys)
+    else
+      changeset
+    end
+  end
+
+  defp message(opts, default, keys) do
+    case Keyword.get(opts, :message, default) do
+      {message, extra} when is_binary(message) and is_list(extra) ->
+        {message, Keyword.merge(keys, extra)}
+
+      message when is_binary(message) ->
+        {message, keys}
+    end
   end
 end

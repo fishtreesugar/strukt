@@ -79,7 +79,13 @@ Ordinary field and embed options may be keyword literals or expressions such as 
 
 `required: true` and `required: [message: "..."]` enable required validation.
 `required: false` disables that inline rule, just like omitting the option. Other validators
-and custom `validate/1` callbacks can still impose additional constraints.
+and custom `validate/1` callbacks can still impose additional constraints. On `embeds_many`
+and `polymorphic_embeds_many`, required validation rejects a missing or empty list.
+
+A module may define its own `changeset/1` or `changeset/2`; Strukt then
+skips generating that function. If only `changeset/2` is defined, the generated `changeset/1`
+calls it. `new/1` and `change/2` always use the internal `changeset/3`, so they still apply
+the schema's casting and validations.
 
 Generated types include `| nil` for optional ordinary fields, even when they have a non-nil
 default. Required ordinary fields and single embeds omit `| nil`, including when `required`
