@@ -1,3 +1,14 @@
+# 0.4.2
+
+- Restore source-name mapping and nested normalization for string-keyed pair-list parameters,
+  including map entries returned by `Enum.filter/2` and `Enum.reject/2`. Ordinary embedded
+  records accept pair lists through both normalized and direct changeset APIs.
+- Report malformed top-level parameters with `Ecto.CastError`, and preserve Ecto's `:invalid`
+  sentinel as an invalid changeset instead of raising an Enumerable protocol error.
+- Include attribute-defined primary keys and generated timestamps in typespecs. Type `:id`
+  fields as integers, including the negative values accepted by Ecto.
+- Clarify migration from 0.4.0 for foreign structs in ordinary single embeds and embed lists.
+
 # 0.4.1
 
 - Preserve field declaration context, including redaction, source mappers, timestamp
@@ -16,7 +27,9 @@
   execute. Ordinary replacement actions and trusted-struct validation behavior are retained.
 - Clarify supported schema declarations, nested validation, and JSON encoding behavior.
 - Persist trusted struct updates to existing ordinary embed lists and reject foreign structs
-  in ordinary single embeds.
+  in ordinary single embeds and embed lists. Unlike 0.4.0, a struct must belong to the declared
+  child schema. Convert foreign child structs with `Map.from_struct/1` to cast their fields
+  as parameters; see the [migration guidance](guides/usage.md#parameter-names-and-changeset-apis).
 - Cast only newly supplied embed fields when updating a changeset, preserving deleted or
   manually edited changes instead of replaying historical parameters.
 - Select the new polymorphic variant before normalization when using a parent discriminator,

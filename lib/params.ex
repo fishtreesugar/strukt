@@ -14,7 +14,10 @@ defmodule Strukt.Params do
       do: params
 
   def transform(module, params, struct) when is_list(params) do
-    if Keyword.keyword?(params), do: transform(module, Map.new(params), struct), else: params
+    case to_map(params) do
+      %{} = params -> transform(module, params, struct)
+      other -> other
+    end
   end
 
   def transform(module, params, nil = _struct) when is_struct(params) do
@@ -33,6 +36,20 @@ defmodule Strukt.Params do
   def transform(module, params, struct) when is_struct(struct) do
     transform_from_struct(module, params, struct)
   end
+
+  # Normalize record-shaped pair lists before source mapping or identity matching.
+  # Preserve invalid shapes for the top-level cast or parent embed error handler.
+  @doc false
+  def to_map(params) when is_list(params) do
+    if Enum.all?(params, fn
+         {key, _value} when is_atom(key) or is_binary(key) -> true
+         _ -> false
+       end),
+       do: Map.new(params),
+       else: params
+  end
+
+  def to_map(params), do: params
 
   # Preserve explicit nil, including invalid nil elements inside embed lists.
   defp transform(_module, nil, _struct, cardinality: :one), do: nil
@@ -279,24 +296,30 @@ defmodule Strukt.Params do
     {:embed, relation} = changeset.types[field]
     values = Map.get(changeset.params, to_string(field))
 
-    if relation.cardinality == :many do
-      values =
-        if is_map(values) and not is_struct(values), do: indexed_values(values), else: values
+    values =
+      case {relation.cardinality, values} do
+        {:one, values} ->
+          to_map(values)
 
-      values = if is_list(values), do: Enum.map(values, &keyword_params/1), else: values
+        {:many, values} when is_map(values) and not is_struct(values) ->
+          values |> indexed_values() |> Enum.map(&to_map/1)
 
-      if is_list(values) and Enum.any?(values, &is_list/1) do
-        Ecto.Changeset.add_error(changeset, field, "is invalid",
-          validation: :embed,
-          type: {:array, :map}
-        )
-      else
-        %{changeset | params: Map.put(changeset.params, to_string(field), values)}
-        |> do_cast_embed(field, relation, values)
-        |> Map.put(:params, changeset.params)
+        {:many, values} when is_list(values) ->
+          Enum.map(values, &to_map/1)
+
+        {:many, values} ->
+          values
       end
+
+    if relation.cardinality == :many and is_list(values) and Enum.any?(values, &is_list/1) do
+      Ecto.Changeset.add_error(changeset, field, "is invalid",
+        validation: :embed,
+        type: {:array, :map}
+      )
     else
-      do_cast_embed(changeset, field, relation, values)
+      %{changeset | params: Map.put(changeset.params, to_string(field), values)}
+      |> do_cast_embed(field, relation, values)
+      |> Map.put(:params, changeset.params)
     end
   end
 
@@ -380,12 +403,6 @@ defmodule Strukt.Params do
       data |> module.changeset(params) |> Map.put(:action, action)
     end
   end
-
-  defp keyword_params(params) when is_list(params) do
-    if Keyword.keyword?(params), do: Map.new(params), else: params
-  end
-
-  defp keyword_params(params), do: params
 
   @doc false
   def put_embed_struct(changeset, field, entity) do
@@ -574,7 +591,7 @@ defmodule Strukt.Params do
   # Explicit keys must never fall back to another entry's position, even if the key
   # is nil, invalid, incomplete, or does not match any current entry.
   defp current_embed(module, params, current, index, key_mode \\ :field) do
-    params = if is_list(params) and Keyword.keyword?(params), do: Map.new(params), else: params
+    params = to_map(params)
     keys = module.__schema__(:primary_key)
     supplied = Enum.map(keys, &{&1, fetch_field_param(module, params, &1, key_mode)})
     current = Enum.map(current, &embedded_data/1)
